@@ -1,0 +1,255 @@
+---
+layout: post
+title:  "kotlin1 函数&变量"
+date:   2019-11-14 16:48:02 +0800
+categories: jekyll update
+tags: demo
+---
+
+## 1. 函数和变量
+### 1.1 函数
+```kotlin
+fun main(args: Array<String>){
+	println("Hello world!")
+}
+```
+函数以关键字`fun`开始声明，`函数名称`紧随其后，`参数列表`用小括号括起来，`返回值类型`位于参数列表后，之间用`:`分隔；
+
+>**语句和表达式:**
+kotlin中表达式有值，可以使用变量引用，而语句没有值；java中所有的控制结构都是语句；
+kotlin中除了循环(for,while,do/while)以外大多数控制结构都是表达式；
+
+***表达式函数体***
+
+```kotlin
+fun max(a:Int, b:Int):Int = if (a> b) a else b
+```
+只有**表达式体函数的返回类型可以省略**，有返回值的代码块体函数，必须显示写出返回值类型和`return`
+
+### 1.2 变量
+kotlin变量类型可以省略，如果没有初始化，需要显示指定类型；
+
+```kotlin
+val answer = 42 //省略变量类型
+val answer:Int  //指定类型
+answer = 42
+```
+变量声明语法：
+`val`/`var` `变量名: 变量类型 = x`
+
+可变变量和不可变量
+
+* `val`(value简写): 不可变引用；相当于java的`final`
+*  `var`(variable简写): 可变引用，可以多次修改；
+
+默认情况下，使用`val`关键字声明变量；
+`val`引用自身是不可变的，但指向的对象可能是可变的；
+例：
+
+```kotlin
+val language = arrayListOf("java")
+language.add("Kotlin")
+```
+
+```kotlin
+fun main(args: Array<String>) {
+    val name = if (args.size > 0) args[0] else "Kotlin"
+    println("Hello, $name!") //字符串模版
+}
+```
+执行结果： `Hello, Kotlin!`
+`字符串模版$`: 相当于java中的字符串拼接("Hello, "+name+"!"), 使用`$`在字符串内取变量的值，并替换到当前位置；
+
+使用`$`取表达式的值，可以在双引号中嵌套双引号，处于表达式(即花括号)内；
+
+```kotlin
+fun main(args: Array<String>) {
+    println("Hello, ${if (args.size>0) args[0] else "Kotlin"}!")
+}
+```
+执行结果： `Hello, Kotlin!`
+
+## 2. 类和属性
+属性：自带java的get，set方法；
+
+```kotlin
+class Person{
+    val name: String, //只读属性：生成一个字段和getter
+    var age: Int //可写属性:一个字段和getter，setter
+}
+```
+当声明属性的时候，就声明了对应的访问器
+
+### 自定义访问器
+```kotlin
+class Rect(val height:Int, val width: Int) {
+    val isSquare: Boolean
+        get() { //声明属性的getter方法
+            return height == width
+        }
+}
+```
+
+## 3. 枚举和when
+枚举的声明：使用`enum class`
+
+```kotlin
+enum class Color {
+    RED, ORANGE, YELLOW, GREEN, BLUE, INDIGO, VIOLET
+}
+```
+声明属性和方法
+
+```kotlin
+enum class Color(val r: Int, val g:Int, val b: Int){
+    RED(255,0,0), GREEN(0,255,0), BLUE(0,0,255);//分号是必须的,
+    //使用分号将枚举常量列表和方法分开
+    fun rgb() = (r*255+g)*255+0
+}
+println(Color.BLUE.rgb()) //255
+```
+### 3.1 when处理枚举类
+when是一个有返回值的表达式
+
+```kotlin
+fun getColor(color: Color) = when(color) {
+    Color.RED -> "red"
+    Color.GREEN -> "green"
+    Color.BLUE -> "blue"
+}
+println(getColor(Color.RED)) // red
+```
+### 合并多个选项
+```kotlin
+//合并多个选项
+fun getWarmth(color: Color)= when(color) {
+    Color.RED, Color.ORANGE, Color.YELLOW -> "warm"
+    Color.GREEN -> "neutral"
+    Color.BLUE, Color.INDIGO, Color.VIOLET -> "cold"
+}
+```
+### when处理任意对象
+
+```kotlin
+fun mix(c1: Color, c2: Color) = when(setOf(c1, c2)){
+    setOf(RED,YELLOW) -> "red and yellow"
+    setOf(GREEN, BLUE) -> "green and blue"
+    else -> throw Exception("Dirty color")
+}
+```
+### 不带参数的when
+
+```kotlin
+fun mix(c1: Color, c2:Color) = when{
+    (c1 == RED && c2 == YELLOW) ||
+    (c1 == YELLOW && c2 == RED) -> "red and yellow"
+    (c1 == GREEN && c2 == BLUE) ||
+    (c1 == BLUE && c2 == GREEN) -> "green and blue"
+    else -> throw Exception("Dirty color")
+}
+println(mix(BLUE,GREEN)) // green and blue
+```
+## 4. 迭代： while 和for
+while循环和do/while循环与java的用法一致；
+### 区间
+使用`..`运算符表示区间，kotlin的区间是包含的，或者说闭合的；
+
+```kotlin
+for(i in 1..100) // 循环1至100， 包含100
+```
+使用`until`表示不闭合，
+
+```kotlin
+for (i in 1 until 100) // 1至99
+```
+```kotlin
+//打印FizzBuzz
+fun fizzBuzz(i: Int)= when{
+    i % 15 ==0 -> "FizzBuzz"
+    i % 3 == 0 -> "Fizz"
+    i % 5 == 0 -> "Buzz"
+    else -> "$i"
+}
+for(i in 1..100){
+    println(fizzBuzz(i))
+}
+```
+### 步长:
+```kotlin
+//步长是2，可以是负数，从100至1 ： 100，98，96...
+for (i in 100 downTo 1 step 2){
+    print(fizzBuzz(i))
+}
+```
+### 迭代map
+
+```kotlin
+val binarymap = TreeMap<Char, String>()
+for (c in 'A'..'C') {
+    val binary = Integer.toBinaryString(c.toInt())
+    binarymap[c] = binary
+}
+for((letter, binary) in binarymap) { //迭代map
+    println("$letter = $binary")
+}
+```
+使用`map[key]`读取值，使用`map[key]=value` 设置值；
+
+```kotlin
+val list = arrayListOf({"10", "11","111"})
+for((index, element) in list.withIndex()) {
+//withIndex返回下标及元素
+    println("$index: $element")
+}
+//0: 10
+//1: 11
+//2: 111
+```
+
+### in：检查集合成员
+使用`in`检查一个值是否在区间内，`!in` 检查一个值是否**不在**区间内。
+
+```kotlin
+fun isLetter(c: Char) = c in 'a'..'z' || c in 'A'..'Z'
+```
+### in适用于when表达式
+
+```kotlin
+fun test(c: Char) = when(c){
+    in '0'..'9' -> "It's a digit"
+    in 'a'..'z', in 'A'..'Z' -> "It's a letter"
+    else -> "I don't know"
+}
+println(test('8')) // It's a digit
+```
+
+## 5. 异常try/catch
+`try`可以是有返回值的表达式
+
+```kotlin
+fun div(a: Int, b: Int){
+    val v = try{
+        a/b
+    }catch(e: Exception){
+        -1
+    }
+    println(v)
+}
+div(0,0) // -1
+```
+```kotlin
+fun readNumber(reader: BufferedReader) {
+    val number = try{
+        Integer.parseInt(reader.readLine())
+    }catch(e: NumberFormatException){
+        null
+    }
+    println(number)
+}
+val reader = BufferedReader(StringReader("not a number"))
+readerNumber(reader) // null
+```
+> 如果try代码块之行正常，代码块中的最后一个表达式就是结果；如果捕获到异常，catch代码块最后一个表达式就是结果
+
+
+
