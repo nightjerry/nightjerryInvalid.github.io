@@ -1,0 +1,219 @@
+---
+layout: post
+title:  "kotlin6 类型"
+date:   2019-11-15 09:57:02 +0800
+categories: jekyll update
+tags: kotlin
+---
+
+## 可空性
+显示在类型名称后面加问号来表示类型可为null
+
+```kotlin
+String? = String or null
+```
+没有问号`?`的类型表示该类型的变量不能为空；这说明常见类型默认都是非空的；
+一个可空类型的值，对它的操作也会受到限制
+
+```kotlin
+fun strLen(s: String?) = s.length()
+ERROR: only safe (?.) or non-null asserted (!!.) calls are allowed on a nullable receiver of type kotlin.String?
+```
+不能将可空类型赋值给非可空类型的变量
+
+### 安全调用运算符: `?.`
+允许把一次`null`检查和一次方法调用合并成一个操作
+
+```kotlin
+s?.toUpperCase() 等同于
+if (s != null) s.toUpperCase() else null
+```
+安全调用的结果类型也是可空的
+
+```kotlin
+fun printAll(s: String?) {
+    val a:String? = s?.toUpperCase()
+    println(a)
+}
+printAll("abc") //ABC
+printAll(null) //null
+```
+可链接多个安全调用
+### `?:`elvis运算符
+`Elivs运算符`或称`null合并运算符`，提供代替null的默认值
+
+```kotlin
+fun foo(s: String?) {
+    val t: String = s ?: "" //如果s为null， 返回一个空字符串，不为空则返回自身
+}
+```
+`elivs运算符`接收两个运算数，如果第一个运算数不为null，结果就是第一个运算数；如果第一个运算数为null，结果就是第二个运算数
+
+elivs运算符常和安全调用运算符一起使用
+
+```kotlin
+fun strLen(s: String?):Int = s?.length ?: 0
+
+println(strLen("abc")) //3
+println(strLen(null)) //0
+```
+elivs运算符第二个运算数也可以是抛出的异常
+
+### `as?`安全转换
+`as?`运算符将值转成制定的类型，如果值不是合适的类型就返回null
+### `!!`非空断言
+`!!`运算符把任何值转成非空类型，如果对null值做非空断言，则会抛出异常
+
+```flow
+st=>start: foo!!
+cond=>condition: yes or no?
+op=>operation: NullpointException
+e=>end: foo
+
+st->cond
+cond(yes)->e
+cond(no)->op
+```
+```kotlin
+fun ignoreNulls(s: String?) {
+    val sNotNull: String = s!! //这行会报错
+    println(sNotNull.length)
+}
+ignoreNulls(null)
+Exception in thread "main" kotlin.KotlinNullpointException
+```
+> 最好避免在同一行中使用多个`!!`断言
+
+### `let`函数
+`let`函数让处理可空表达式变得更容易；和安全调用运算符一起，允许对表达式求值，检查求值结果是否为null，把结果保存为一个变量
+
+```kotlin
+fun sendEmail(email: String) {...}
+
+val email:String? = ...
+sendEmail(email)
+ERROR: type mismatch: inferred type is String? bug String was expected
+
+//必须显示检查这个值不为null
+if (email != null) sendEmail(email)
+```
+另一种处理方法：`let`函数
+`let`函数把一个调用它的对象变成lambda表达式的参数，结合安全调用语法，调用let函数的可空对象，转变成非空对象
+语法：
+
+```kotlin
+foo?.let{ ... it ...} 
+//let函数只有在foo不为null的时候才执行
+//lambda内部的it是非空的;如果foo为null，则什么也不执行
+```
+
+```kotlin
+email?.let{ email -> sendEmail(email)}
+```
+如果使用lambda自动生成的变量`it`,则简化后为
+
+```kotlin
+email?.let{ sendEmail(it) }
+```
+```kotlin
+email.let{ sendEmail(it) }//没有安全调用，it是可空的
+```
+要使用let函数检查非空的实参，必须使用安全调用运算符`?.`
+### `lateinit`延迟初始化属性
+kotlin通常要求在构造方法中初始化所有属性，如果某个属性是非空类型，必须提供非空的初始值；否则声明可空类型，如果是可空类型，每次访问都需要null检查或`!!`运算符
+
+```kotlin
+class MyService {
+    fun perform(): String = "foo"
+}
+class Mytest{
+    private var myService: MyService?= null
+    
+    @Before fun setUp(){
+        myService = MyService()
+    }
+    @Test fun testAction(){
+        Assert.assertEquals("foo", myService!!.perfrom())//每次都要判断可空性
+    }
+}
+```
+`lateinit`: 延迟初始化,不需要指定属性可空
+
+```kotlin
+class MyTest{
+    private lateinit var myService: MyService
+    
+    @Before fun setUp(){
+        myService = MyService()
+    }
+    @Test fun testAction(){
+        Assert.assertEquals("foo", myService.perfrom())//不需要null检查
+    }
+}
+```
+延迟初始化的属性都是`var`
+不需要在构造函数中初始化`lateinit`修饰的属性，如果属性在初始化之前被调用，得到异常"lateinit property XXX has not benn initialized"(XXX为属性名称)
+
+Kotlin中所有泛型类和泛型函数的类型参数默认都是可空的
+
+```kotlin
+fun <T> printHash(t: T){
+    println(t?.hashCode()) //t可空，使用安全调用
+}
+println(null) //null
+//T被推导成 `Any?`
+```
+要类型参数非空，需要指定一个非空的上界，泛型才会拒绝可空值做参数
+
+```kotlin
+fun <T: Any> printHash(t: T) {
+    println(t.hashCode())
+}
+```
+
+## 只读集合和可变集合
+创建集合函数：
+
+| 集合类型 | 只读 | 可变 |
+| --- | --- | --- |
+| List | listOf | mutableListOf, arrayListOf |
+| Set | setOf | mutableSetOf, hashSetOf, linkedSetof, sortedSetof |
+| Map | mapOf | mutableMapOf, hashMapOf, linkedMapOf, sortedMapOf  |
+
+kotlin的集合设计与java不同，把访问集合数据的接口和修改集合数据的接口分开了.
+只读集合的基类kotlin.collections.Collection
+kotlin.collections.MutableCollection可以修改集合数据
+
+## 创建数组
+使用`array.indices`获取所有下标
+
+创建数组的方式：
+
+* arrayOf ,包含的元素是指定为该函数的实参
+* arrayOfNulls 创建给定大小的数组，包含null.只能用来创建包含元素类型可空的数组
+* Array 构造函数接收数组的大小和lambda表达式，用lambda创建数组元素
+
+```kotlin
+val letters = Array<String>(7) { i-> ('a'+i).toString() }
+println(letters.joinToString("")) //abcdefg
+``` 
+Int类型的数组为IntArray，还有ByteArray,CharArray,BooleanArray
+
+```kotlin
+val fiveZeros = IntArray(5)
+val fiveZeros = intArrayOf(0,0,0,0,0)
+val squares = IntArray(5) {i -> (i+1) * (i+1) }
+println(squares.joinToString())//1,4,9,16,25
+```
+```kotlin
+//forEachIndexed 获取下标和元素
+fun main(args: Array<String>) {
+    args.forEachIndexed {index, element -> 
+        println("$index is: $element")
+    }
+}
+```
+
+
+
+

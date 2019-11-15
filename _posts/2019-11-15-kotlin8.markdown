@@ -1,0 +1,265 @@
+---
+layout: post
+title:  "kotlin8 高阶函数"
+date:   2019-11-15 09:57:02 +0800
+categories: jekyll update
+tags: kotlin
+---
+
+## 声明高阶函数
+高阶函数就是以另一个函数作为参数或者返回值的函数
+
+### 函数类型
+lambda表达式就是函数类型
+
+```kotlin
+val sum = {x: Int, y: Int -> x+y}
+val action = {println(42)}
+val b = 3
+val a: Int = 4
+```
+编译器推导出sum,action变量具有函数类型;与变量声明方式类似，sum省略了变量类型，显示类型声明方式如下
+
+```kotlin
+val sum: (Int, Int) -> Int = {x,y -> x+y}
+val action:()->Unit = { println(42) }
+```
+
+声明函数类型，需要将函数参数类型放在括号中，紧接着是一个箭头和函数的 返回类型
+
+```kotlin
+/*函数参数类型*/(Int, String) -> Unit/*返回类型*/
+```
+> 函数类型的声明必须有显式的返回类型， Unit类型也不能省略
+
+函数类型的返回值为可空类型
+
+```kotlin
+var canReturnNull: (Int, Int) -> Int? ={ null } 
+```
+函数类型的参数为可空类型的写法
+
+```kotlin
+var funOrNull:((Int, Int) -> Int)? = {...}
+```
+函数类型的参数名
+可以为函数类型声明中的参数指定名字
+
+```kotlin
+funperformRequest(url: String, callback:(code: Int, content:String) -> Unit){ ... }
+
+val url = "http://kotlin.in"
+performRequest(url) { code, content -> /*...*/}
+performRequest(url) { code, page -> /*...*/ }
+```
+> 参数名称不会影响类型的匹配，不必使用和函数类型声明一摸一样的参数名称
+
+### 作为参数的函数
+
+```kotlin
+//定义一个简单的高阶函数:  函数类型的参数
+fun twoAndThree(operation: (Int, Int) -> Int) {
+    val result = operation(2,3)
+    println("result is $result")
+}
+
+twoAndThree{ a,b -> a+b }  // result is 5
+twoAndThree{ a, b -> a* b} // result is 6
+//operation是参数类型，为函数类型
+```
+### 函数类型的参数默认值和null值
+#### 指定函数类型的参数默认值
+
+```kotlin
+fun <T> Collection<T>.joinToString(
+    separator: String = ", ",
+    prefix: String = "",
+    postfix: String = "",
+    transform: (T) -> String = { it.toString() }
+): String {
+    val result = StringBuilder(prefix)
+    
+    for ((index, element) in this.withIndex()) {
+        if (index > 0)
+            result.append(separator)
+        result.append(transform(element))
+    }
+    result.append(postfix)
+    return result.toString()
+}
+
+val letters = listOf("Alpha", "Beta")
+println(letters.joinToString())// Alpha, Beta
+println(letters.joinToString{ it.toLowerCase()})//alpha, beta
+println(letters.joinToString(separator="!",postfix="!", transform={it.toUpperCase()}))//ALPHA!BETA!
+```
+#### 参数为可空的函数类型
+
+```kotlin
+fun foo(callback: (() -> Unit)?) {
+    if (callback != null) //必须显式检查null
+        callback()
+}
+```
+更简单的版本 ： `invoke`
+函数类型包含`invoke`方法的接口的具体实现,可通过安全调用方式执行：`callback?.invoke()`
+
+```kotlin
+fun foo(callback: (() -> Unit)?) {
+    callback?.invoke()
+}
+```
+### 返回函数的函数
+声明一个返回另一个函数的函数，需要指定一个函数类型作为返回类型
+需要写一个return表达式，跟一个lambda，一个成员引用或者其它的函数类型的表达式
+
+```kotlin
+enum class Delivery {STANDARD, EXPEDITED }
+class Order(val itemCount: Int)
+
+fun getShippingCost(delivery: Delivery): (Order)->Double {
+    if (delivery == Delivery.EXPEDITED)
+        return { order -> 6+ 2.1* order.itemCount }
+    return { order -> 1.2 * order.itemCount }
+}
+
+val calculator = getShippingCost(Delivery.EXPEDITED)
+println("Shipping costs ${calculator(Order(3))}")//shipping costs 12.3
+```
+使用场景就少
+
+## 内联函数
+当函数被声明为`inline`时，函数体会被直接替换到函数被调用的地方，而不是被正常调用
+
+如果lambda参数在某个地方被保存起来，以便后续使用，lambda表达式的代码将不能被内联；如使用则报错"Illegal usage of inline-parameter"非法使用内联函数
+
+好处： 不会产生额外的类或对象
+
+> 声明内联函数时，注意代码的长度
+
+### lambda的返回语句
+
+```kotlin
+data class Person(val name: String, val age: Int)
+
+val people = listOf(Person("Alice",29), Person("Bob",31))
+
+fun search(people: List<Person>) {
+    for (person in people) {
+        if (person.name == "Alice") {
+            println("Found!")
+            return 
+        }
+    }
+    println("Alice is not found")
+}
+search(people) //Found!
+```
+```kotlin
+fun search(people: List<Person>) {
+    people.forEach {
+        if( it.name == "Alice") {
+            println("Found!")
+            return
+        }
+    }
+    println("Alice is not found")
+}
+// 两个search方法功能一致
+```
+在lambda中使用`return`，从调用lambda的函数中返回，并不只是从lambda中返回，这样的return语句叫`非局部返回`
+
+只有在以lambda作为参数的函数时内联函数的时候才能从更外层的函数返回，在非内联函数的lambda中使用return是不允许的
+
+### 使用标签返回：从lambda中返回
+想从lambda表达式出返回,使用标签可以标记它，在return关键字后面引用标签
+
+```kotlin
+fun search(people: List<Person>) {
+    people.forEach label@ {
+        if ( it.name == "Alice")
+            return@label  //引用标签
+    }
+    println("Alice might be somewhere")
+}
+search(people)  //Alice might be somewhere
+```
+使用`@`符号标记一个标签，从一个lambda返回
+lambda作为参数的函数的函数名可疑作为标签
+
+```kotlin
+fun search(people: List<Person>) {
+    people.forEach {
+        if ( it.name == "Alice")
+            return@forEach  //引用标签
+    }
+    println("Alice might be somewhere")
+}
+```
+一个lambda表达式的标签最多只有一个
+
+### 匿名函数
+匿名函数可以省略函数名和参数类型
+
+```kotlin
+fun search(people: List<Person>) {
+    people.forEach(fun (person) { //匿名函数
+        if (person.name == "Alice")
+            return //指向最近一个fun函数
+        println("${person.name} is not Alice")
+    }
+}
+```
+
+### try-with-resource
+try-with-resource 在普遍开发中的使用为 `try/catch/finally`,用于捕获异常，关闭流等
+java7中有`AutoCloseable`（自动回收关闭资源机制）,在kotlin中用内联函数`use()`实现，任何对象都可以调用`use`函数来实现自动关闭资源，无需调用`close()`
+
+```kotlin
+val writer = FileWriter("test.txt")
+writer.use {
+    writer.write("hello world")
+}
+```
+```kotlin
+FileWriter("test.txt").use{w -> w.write("hello")}
+```
+```kotlin
+FileWriter("test.txt").use{it.write("world")}
+```
+
+```kotlin
+public inline fun <T: AutoCloseable?, R> T.use(block: (T)-> R) : R
+```
+inputStream使用`use`函数示例
+
+```kotlin
+val reader = BufferedReader(inputStream.reader())
+val content = StringBuilder()
+try{
+    var line = reader.readLine()
+    while(line != null) {
+        content.append(line)
+        line = reader.readLine()
+    }
+}finally{
+    reader.close()
+}
+```
+使用`BufferedReader. readText()`简化后
+
+```kotlin
+val reader = BufferedReader(inputStream.reader())
+val content : String
+try{
+    content = reader.readText()
+}finally{
+    reader.close()
+}
+```
+使用`use`简化
+
+```kotlin
+val content = inputStream.bufferedReader().use(BufferedReader::readText)
+```
+
