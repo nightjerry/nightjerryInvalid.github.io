@@ -1,0 +1,204 @@
+---
+layout: post
+title:  "kotlin basic 5 lambda"
+date:   2019-11-15 09:57:02 +0800
+categories: jekyll update
+tags: kotlin
+---
+
+### lambda语法
+始终在花括号内，箭头将实参列表与函数体隔开
+
+```kotlin
+{x: Int, y: Int -> x+y}
+```
+```kotlin
+val people = listOf(Person("Bob",29), Person("Alice",20))
+println(people.maxBy{ it.age}) //Person(name=Bob, age=29)
+//`it`是自动生成的参数名称
+
+people.maxBy(){ p:Person -> p.age}//显式写出参数类型
+people.maxBy {p: Person -> p.age}//当lambda是唯一参数时，可去掉括号
+people.maxBy {p -> p.age} //推导出参数类型
+```
+> 最好显示声明每个lambda的参数
+
+### 成员引用`::`
+创建一个调用单个方法或访问单个属性的函数值, 双冒号将类名称与要引用的成员名隔开,***不要***在成员引用的名称后加括号
+还可以引用顶层函数
+
+```kotlin
+fun salute() = println("hello")
+run(::salute)
+```
+## 集合的函数式API
+### filter和map
+`filter`函数可以从集合中移除不想要的元素，但不会改变这些元素；起过滤作用
+`map`函数对集合中的每个元素应用给定的函数并把结果收集到新集合
+
+```kotlin
+val list = listOf(1,2,3,4)
+println(list.filter{ it % 2 == 0}) //[2,4]
+println(list.map{it * it} //[1,4,9,16]
+```
+```kotlin
+people.filter{it.age> 20}.map(Person::name) //[Bob]
+```
+针对map应用过滤和变换
+
+```kotlin
+val numbers = mapOf(0 to "zero", 1 to "one")
+println(numbers.mapValues { it.value.toUpperCase()} //{0=ZERO, 1=ONE}
+```
+### 对集合应用判断式：`all``any``count``find`
+`count`函数检查有多少元素满足判断式，
+`find`函数返回第一个符合条件的元素
+`all`是否所有元素满足判断式
+`any`检查集合汇总是否**至少**存在一个匹配的元素
+> `!`加上判断式，表示取反
+
+```kotlin
+val canInClub = {p: Person -> p.age <=27}
+val people = listOf(Person("Alice", 27), Person("Bob", 31))
+println(people.all(canInClub)) //false
+```
+```kotlin
+val list = listOf(1,2,3)
+println(list.any{it != 3}) // true
+
+println(people.count(canInClub)) //1
+```
+`count`与`size`对比
+
+```kotlin
+println(people.filter(canInClub).size)//1
+//这种情况下中间集合绘被创建并用来存储所有满足判断式的元素
+```
+
+### groupBy : 把列表转成map
+`groupBy`起过滤作用，根据条件得到map
+
+```kotlin
+val people = listOf(Person("Alice", 31), Person("Bob", 29), Person("Carol", 31))
+println(people.groupBy{ it.age})
+```
+> 得到的结果类型是`Map<Int,List<Person>>`,使用`mapKeys`，`mapValues`查询
+
+### flatMap和flatten 
+`flatMap`对集合中的每个元素做映射，把多个列表合并成一个列表
+
+```kotlin
+val strings = listOf("abc", "def")
+println(strings.flatMap{ it.toList()})
+//[a,b,c,d,e,f]
+```
+### 序列：惰性集合操作
+`filter`和`map`都会返回一个列表，如果集合元素多，链式调用会变得低效. 
+为了提高效率，可以把操作集合变成使用`序列`
+使用序列更高效地对集合元素执行链式操作，不需要创建额外的集合来保存过程中产生的中间结果.
+
+`Sequence`只提供一个方法`iterator`，用来从序列中获取值
+调用`asSequence`把集合转换成序列，调用`toList`把序列转集合
+
+### 执行序列操作： 中间和末端操作
+
+```kotlin
+sequence.map{...}.filter{...}.toList()
+//toList()为末端操作，map/filter为中间操作
+```
+```kotlin
+listOf(1,2,3,4).asSequence()//把初始集合转成序列
+               .map{print("map($it) "); it*it}
+               .filter{ print("filter($it) "); it % 2==0 }
+```
+执行这段代码不会在控制台输出任何内容，map和filter变换被延期了,只有获取结果时才被应用(即末端操作被调用的时候)
+
+```kotlin
+listOf(1,2,3,4).asSequence()
+        .map{print("map($it) "); it*it}
+        .filter{ print("filter($it) "); it%2==0 }
+        .toList()
+//map(1) filter(1) map(2) filter(4) map(3) filter(9) map(4) filter(16)
+末端操作触发执行了所有的延期计算               
+```
+操作顺序：对序列来说，所有操作是按顺序应用在每个元素上.也就是说一个元素执行完所有中间操作后，再执行下一个元素
+
+这种操作意味着部分元素不会发生转换，惰性求值逐个处理元素
+
+```kotlin
+println(listOf(1,2,3).asSequence().map{it * it}.find{ it > 3}) 
+println(listOf(1,2,3).map{it * it}.find{ it > 3})
+```
+> 第一行方法集合中的元素只执行前两个中间操作，然后发现满足条件元素，直接返回结果，后面的元素不再执行map,find
+> 第二行方法对集合中的所有元素先执行map，再执行find
+> 先应用filter有助于减少变换的总次数
+
+### 创建序列
+* 集合上调用`asSequence()`
+* `generateSequence`给定序列的一个元素，计算下一个元素
+
+```kotlin
+val natureNumbers = generateSequence(0){it+1}
+val numbers = natureNumbers.takeWhile{ it <=100}
+println(numbers.sum()) // 5050
+```
+### 函数式接口
+接口只有一个抽象方法，这种接口称`函数式接口`，或`SAM`接口
+`SAM`代表单抽象方法
+### SAM构造方法：把lambda转换成函数式接口
+`SAM构造方法`只接收一个参数, 就是一个被用作函数式接口单抽象方法体的lambda，并返回实现了这个接口的类的一个实例
+可以用变量存储SAM构造方法返回的类的实例
+
+```kotlin
+val listener = OnClickListener{ view -> 
+    val text = when(view.id){
+        button.id -> "Click"
+        else -> "unknow id"
+    }
+    toast(text)
+}
+button.setOnClickListener(listener)
+```
+> 更简洁的实现单抽象方法接口
+
+### `with`与`apply`: 带接受者的lambda
+`with`对同一个对象执行多次操作，不需要反复使用对象名称
+
+```kotlin
+fun alphabet(): String {
+    val result = StringBuilder()
+    for (letter in 'A'..'G') 
+        result.append(letter)
+    result.append("\nNow I know the alphabet!")
+    return result.toString()
+}
+println(alphabet())//ABCDEFG Now I know the alphabet!
+```
+```kotlin
+//与上例等同
+fun alphabet(): String() {
+    val stringBuilder = StringBuilder()
+    return with(stringBuilder) {
+        for (letter in 'A'..'G')
+            this.append(letter)
+        append("\nNow I know the alphabet!")
+        this.toString()
+    }
+}
+```
+`with`函数把第一个参数转换成作为第二个参数传给lambda的接受者，可以使用this引用来访问这个接受者，也可以省略this
+
+`with`返回的值就是执行lambda的结果，是lambda中最后一个表达式的值.
+`apply`与`with`函数一摸一样，区别是`apply`始终会返回作为实参传递给它的对象，就是说将参数对象返回
+
+```kotlin
+fun alphabet() = StringBuilder.apply{ 
+    for (letter in 'A'..'G')
+        append(letter)
+    append("\nNow I know the alphabet!")
+}.toString()
+```
+
+
+
+
