@@ -1,0 +1,176 @@
+---
+layout: post
+title:  "go1 语法"
+date:   2019-11-15 17:15:02 +0800
+categories: jekyll update
+tags: go
+---
+
+[TOC]
+### 变量
+
+``` go
+//变量的声明
+var age int
+```
+```go
+//打印变量
+fmt.Println(age)
+```
+```go
+//变量初始化
+var age int = 10
+```
+
+```go
+//自动推导类型：在声明赋值变量时，不需要`var`和变量类型，其类型由所赋值决定
+num := 10
+//多重赋值
+a, b, c := 1, 2, 3
+```
+```go
+//交互变量
+a := 1
+b := 2
+a, b = b, a
+```
+
+### 输出函数
+`println``print`
+
+`printf`: 格式化输出
+
+```go
+a := 1
+fmt.Printf("a = %d", a) //a = 1
+```
+
+### 输入函数
+`Scan``Scanf`
+
+``` go
+func main(){
+	var age int
+	fmt.Println("please input age:")
+	fmt.Scanf("%d", &age) //通过Scanf函数将键盘输入的数据赋值给变量，变量一定要加&
+	//fmt.Scan(&age)// 不需要指定格式化符号
+	fmt.Println("age = ", age) //打印键盘输入数据
+	fmt.Printf("%p", &age) //打印变量地址 , 0x000086000
+}
+```
+
+### 变量命名规范
+只能由数字，字母，_ (下划线)组成
+不能由数字开头
+不能使用关键字
+
+### 基础数据类型
+#### 整形
++ 有符号整型`int`: 正整数，负整数，0
+	32位系统： `int`占4个字节，范围：-
+	64位系统: `int`占8字节，范围
++ 无符号整型`uint` : 正整数， 0
+	32位系统： `int`占4个字节，范围：0 ～ 
+	64位系统: `int`占8字节，范围：0 ～
+
+``` go
+var age uint
+age = -10
+fmt.Println(age) //constant -10 overflow uint
+```
+
+> 字节：
+> 
+> 位`bit` : 最小存储单位，用来存储二进制(0, 1)  
+
+> 字节`byte`:基本存储单位，用大写`B`表示 ; 
+> 1B = 8bit; 1KB = 1024B
+> 整型格式化输出为 `%d`
+
+#### 浮点类型
+`float32` ,`float64`
+
+`float32`:精确到小数点后7位
+
+`float64`:精确到小数点后15位
+
+```go
+var num float64 = 12.34
+fmt.Printf("%f",num) //12.34
+
+var num2 float64 = 12.3456
+fmt.Printf("%.2f",num2)//保留两位小数， 12.35
+
+fmt.Printf("%T", num2) //输出变量类型 float64
+```
+> 自动推导类型，创建的浮点型，默认为`float64`
+> 浮点类型格式化输出为 `%f`
+
+#### 布尔类型 `bool`
+值为 `true``false`
+
+```go
+var res bool = true
+fmt.Printf("%t", res) //格式化输出， true
+```
+> `bool` 格式化输出为 `%t`
+
+#### 字符类型 `byte`
+
+```go
+var ch byte = 'a'
+fmt.Println(ch) //97
+fmt.Printf("%c", ch) //a
+fmt.Printf("%d", ch) //97
+```
+#### 字符串类型 `string`
+
+```go
+var name string = "hello"
+fmt.Printf("%s", name)
+```
+#### 强制类型转换
+```go
+var num float64 = 2.15
+fmt.Printf("%d", int(num))
+```
+#### 格式化输出
+
+### 常量
+使用`const`修饰
+
+```go
+const PI float64 = 3.14
+fmt.Println(".2%f", PI)
+```
+```go
+//不指定类型的方式
+const PI = 3.14  
+(错误方式 const PI := 3.14)
+```
+> 不允许打印常量的地址
+
+> 使用`const`创建常量，建议名称大写
+> 
+> 字面常量`literal`，指程序中硬编码的常量
+
+### 运算符
+> 只有后自增自减，没有前自增，前自减
+
+#### 赋值运算符
+`=``+=``-=``*=``/=``%=`
+
+#### 关系运算符
+`==``!=``<``>``<=``>=`
+
+#### 逻辑运算法
+`!``&&``||`
+
+#### 运算符优先级
+算术运算符: `*``/``%`
+算术运算符: `+``-`
+比较运算符: `==``!=``<``>``<=``>=`
+逻辑运算符: `&&`
+逻辑运算符: `||`
+赋值运算符: `=``+=``-=``*=``/=``%=`
+
