@@ -1,0 +1,382 @@
+---
+layout: post
+title:  "kotlin3 类,对象和接口"
+date:   2019-11-15 09:53:02 +0800
+categories: jekyll update
+tags: kotlin
+---
+
+## 1. 类
+***Kotlin的声明默认时public final的***
+嵌套的类默认不是内部类，没有包含其对外部类的隐式引用.
+使用`interface`定义接口
+### 接口实现
+kotlin使用冒号`:`关键字代替java中的`extends`和`implements`关键字.
+与java一样，类只能单继承，可以实现多个接口
+kotlin中的`override` 是强制要求的
+接口中的函数可以有默认的方法体,有默认实现的函数可以不重写
+
+```kotlin
+interface Clickable {
+    fun click()
+    fun showOff() = println("I'm clickable!")
+}
+```
+如果实现多个接口，接口有相同的函数名，则类需要显示实现该方法，否则编译错误：
+
+```
+The class 'Button' must
+override public open fun showOff() because it inherits many implementation of it.
+```
+```kotlin
+interface Focusable {
+    fun showOff() = println("I'm focusable!")
+}
+class Button: Clickable, Focusable {
+    override fun click() = println("I was clicked")
+    //显示实现，通过super<父类>调用父类方法
+    override fun showOff() {
+        super<Clickable>.showOff()
+        super<Focusable>.showOff()
+    }
+}
+```
+### 类继承
+类默认是`final`的，不允许被继承；使用`open`关键字修改可以被继承，还需要给可以被重写的属性和方法添加`open`修饰符
+
+```kotlin
+open class RichButton: Clickable {
+    fun disable(){...} // final的，子类不能重写
+    open fun animate(){...} //子类可以重写
+    override fun click(){...} //已重写的open函数，本身也是open的
+}
+```
+> 已重写了基类或接口的成员，重写的成员默认是open的；如果不想类的子类再重写该成员，需要显示将重写的成员标为`final`
+> 
+抽象类的抽象成员始终是`open`的,非抽象函数默认是`final`
+接口中的成员始终是`open`
+
+```kotlin
+open class RichButton: Clickable{
+    final override fun click(){}
+}
+abstract class Animate{
+    abstract fun animate() //open
+    fun animateTwice(){} //默认final
+}
+```
+### 可见性修饰符
+kotlin可见性修饰符包括`public`,`protected`,`internal`,`private`
+`protected`在kotlin中只能在类和它的子类中可见，与java不同
+`internal`只在模块内部可见，一个模块就是一个项目
+
+| 修饰符 | 类成员 | 顶层声明 |
+| --- | --- | --- |
+| public(默认) | 所有地方可见 | 所有地方可见 |
+| internal | 模块中可见 | 模块中可见 |
+| protected | 子类中可见 | － |
+| private | 类中可见 | 文件中可见 |
+
+如果违反可见性规则，编译时发生错误；
+
+```kotlin
+internal open class TalkButton: Focusable {
+    private fun yell() = println("Hey!")
+    protected fun whisper() = println("Let's talk!")
+}
+fun TalkButton.giveSpeech(){
+    yell() //错误，不能访问private
+    whisper() //错误，不能访问protected
+}
+```
+修改属性的可见性
+
+```kotlin
+class LengthCounter {
+    var counter: Int = 0
+        private set //外部不能修改该属性
+    
+    fun addWord(word:String){
+        counter += word.length
+    }
+}
+
+val len = LengthCounter()
+len.addWord("hi")
+println(len.counter) //2
+```
+## 内部类和嵌套类
+区别：嵌套类不能访问外部类的实例，而内部类可以.
+嵌套类和内部类在Java与Kotlin中的对应实现方式：
+
+| 类A在类B中声明 | Java | Kotlin |
+| --- | --- | --- |
+| 嵌套类 (不存储外部类的引用) | static class A | class A |
+| 内部类(存储外部类的引用) | class A | inner class A |
+
+内部类引用外部类语法：`this@Outer`
+
+```kotlin
+class Outer {
+    inner class Inner{
+        fun getOuterReference(): Outer = this@Outer
+    }
+}
+```
+## 密封类: 受限的类继承结构
+执行when表达式时，kotlin编译器会`强制`检查默认选项(else)
+
+```kotlin
+class Expr
+class Num(val value: Int): Expr()
+class Sum(val left:Expr, val right:Expr): Expr()
+
+//必须检查else
+fun eval(e: Expr): Int = when(e){
+    is Expr.Num -> e.value
+    is Expr.Sum -> eval(e.right) + eval(e.left)
+    else -> throw IllegalArgumentException("Unknow")
+}
+```
+
+密封类：为父类添加一个`sealed`修饰符，对可能创建的子类做出严格的限制，所有的直接子类必须嵌套在父类中,不能在父类外部拥有子类
+
+密封类表达式：when的参数为密封类时，已涵盖所有子类，可以去掉else；如果有子类不再when表达式中，会导致编译失败
+
+```kotlin
+sealed class Expr{
+    class Num(val value: Int): Expr()
+    class Sum(val left:Expr, val right:Expr): Expr()
+}
+//when 涵盖所有可能的情况，不需要else分支
+fun eval(e: Expr): Int = when(e){
+    is Expr.Num -> e.value
+    is Expr.Sum -> eval(e.right) + eval(e.left)
+}
+```
+> `sealed`修饰的类是`open`的
+
+## 构造函数
+主构造函数：至多有一个，在类体外部声明
+从构造函数：可以有多个，在类体内部声明
+
+`constructor`用来声明主/从构造函数
+`init`关键字引入初始化语句块，在类被创建时执行，与主构造函数一起使用.
+因为主构造函数语法限制，不能包含初始化代码
+
+```kotlin
+class User constructor(_nickname: String) {
+    val nickname: String
+    init{
+        nickname = _nickname
+    }
+}
+```
+> 主构造函数没有注解或可见性修饰符，可省略`constructor`
+
+```kotlin
+class User(_nickname: String) { //简化版
+    val nickname= _nickname
+}
+
+//带可见性修饰符，不能省略constructor
+class Test private constructor(){}
+```
+```kotlin
+class User(val nickname:String) 
+//val修饰的属性会用构造方法的属性来初始化，等同于上例
+```
+```kotlin
+class User(val nickname:String, val isSubscribed: Boolean = true) //提供默认值
+
+val alice = User("Alice")
+println(alice.isSubscribed) //true
+
+val alice = User("Alice", false)
+val alice = User("Alice", isSubscribed = false)
+```
+> 如果所有的构造方法参数都有默认值，编译器会生成一个额外的不带参数的构造函数来使用所有的默认值
+
+如果类具有父类，主构造函数需要初始化父类，
+
+```kotlin
+open class User(val nickname: String){...}
+class TwitterUser(nickname: String) : User(nickname){ ...}
+```
+
+如果没有给类声明任何的构造方法，将会生成默认构造方法
+
+```kotlin
+open class Button
+```
+如果继承Button，且子类没有提供任何的构造方法，必须显示调用父类的构造方法，即使没有参数
+
+```kotlin
+class RadioButton : Button()
+```
+> 区别：接口没有构造函数，实现接口不需加括号
+
+### 初始化父类的方式
+
+```kotlin
+open class View {
+    constructor(ctx: Context) {...}
+    constructor(ctx: Context, attr: AttributeSet){..}
+}
+class Button : View {
+    constructor(ctx: Context): super(ctx){..}
+    constructor(ctx: Context, attr: AttributeSet): super(ctx, attr){}
+    //或者
+    constructor(ctx: Context): this(ctx,null){..}
+}
+
+```
+### 实现接口中声明的属性
+接口可以包含**抽象属性**声明,意味着具体实现User接口的类需要提供一个取得nickname值的方式.
+
+```kotlin
+interface User {
+    val nickname: String
+}
+
+class PrivateUser(override val nickname: String):User //1.构造函数初始化
+
+class SubscribUser(val email: String) : User{
+    override val nickname: String
+        get() = email.substringBefore('@') //2.自定义getter
+}
+class FacebookUser(val accountId: Int): User {
+    override val nickname = getFacebookName(accountId)   //3.属性初始化
+}
+```
+### 支持字段`field`
+
+```kotlin
+class User(val name: String) {
+    var address: String = "unspecified"
+        set(value: String) {
+            println("""Address was changed for $name:"$field" -> "$value".""".trimIndent())
+            
+            field = value
+        }
+}
+
+val user = User("Alice")
+user.address = "Beijing"
+//Address was changed for Alice: "unspecified"->"Bejing".
+```
+> 使用了`field`来访问支持字段的值,getter中只能读取值，setter中既能读取又能修改.
+> 使用默认的访问器实现，编译器会为属性生成支持字段
+
+### 数据类和类委托
+数据类自动生成通用方法的实现，使用`data`修饰
+
+```kotlin
+data class Client(val name:String, val age: Int)
+//使用data修饰，编译器自动重写`equals`,`hashCode`,`toString`
+```
+> `equals`,`hashCode`将所有在**主构造**函数中声明的属性呢纳入考虑
+
+//TODO 类委托
+
+##  `object`关键字
+`object`关键字定义一个类同时创建一个实例
+功能如下：
+
+* `对象声明`是定义`单例`的一种方式；
+* `伴生对象`可以持有工厂方法
+* `对象表达式`：等同于java的匿名内部类
+
+#### 对象声明
+将类声明与该类的单一实例声明结合在一起
+
+```kotlin
+object Payroll {
+    val allEmployees = arrayListOf<Person>()
+    
+    fun calculateSalary(){
+        for (person in allEmployees){...}
+    }
+}
+
+Payroll.allEmployees.add(Person(...))
+Payroll.calculateSalary()
+```
+对象声明与类一样，可以包含属性，方法，初始化语句块等的声明.不允许的是构造函数(主／从)
+对象声明在定义的时候就立即创建了，不需要在其它地方调用构造方法.
+使用方法：对象名加`.`调用方法和访问属性
+#### 伴生对象：工厂方法和静态成员
+> kotlin中没有static关键字，不能拥有静态成员，一般用`顶层函数`替代，但顶层函数无法访问类的`private`成员
+
+在类中使用`companion`关键字，可以通过类名直接访问类的方法和属性,这就是伴生对象
+
+```kotlin
+class A{
+    companion object {
+        fun bar() {
+            println("Companion object called")
+        }
+    }
+}
+A.bar() //Companion object called
+```
+伴生对象可以访问类中`private`成员，包括`private`构造方法，是实现工厂模式的理想选择.
+
+```kotlin
+class User private constructor(val nickname: String) {
+    companion object {
+        fun newSubscribingUser(email: String) = User(email.substringBefore('@'))
+    }
+}
+
+val subUser = User.newSubscribingUser("bob@gmail.com")
+println(subUser.nickname) //bob
+```
+伴生对象在子类中不能被重写
+伴生对象是声明在类中的普通对象，可以有名字，可以实现接口，有扩展函数或属性
+
+```kotlin
+class Person(val name: String) {
+    companion object Loader {//给伴生对象命名`Loader`
+        fun fromJson(jsonText: String): Person= {...}
+    }
+}
+//可以通过两种方式来调用fromJson
+val person = Person.Loader.fromJson("{name:'Bob'}")
+val p = Person.fromJson("{name:'Bob'}")
+```
+```kotlin
+//伴生对象实现接口
+interface JSON<T> {
+    fun fromJson(jsonText: String): T
+}
+
+class Person(val name: String) {
+    companion object: JSON<Person> {
+        override fun fromJson(jsonText: String): Person = {...}
+    }
+}
+```
+为伴生对象定义扩展函数,***类中必须声明伴生对象***,即使是空的
+
+```kotlin
+class Person(val name: String){
+    companion object{}//空的伴生对象
+}
+
+fun Person.Companion.fromJson(json: String): Person {...}
+val p = Person.fromJson("{name:'bob'}")
+```
+### 对象表达式: java版匿名内部类
+
+```kotlin
+//android中的设置按钮的点击事件
+button.setOnClickListener{
+    object: View.OnClickListener{
+        override fun onClick(v: View){...}
+    }
+}
+```
+> 与对象声明不同，匿名对象不是单例的
+> 对象表达式在匿名对象中重写多个方法时是最有用的; 实现一个单方法的接口(如Runnable),推荐`lambda`
+
