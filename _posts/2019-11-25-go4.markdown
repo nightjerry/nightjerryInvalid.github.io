@@ -1,0 +1,312 @@
+---
+layout: post
+title:  "go4 map/struct"
+date:   2019-11-25 16:43:02 +0800
+categories: jekyll update
+tags: go
+---
+
+## 4 map/struct
+[TOC]
+
+### map
+#### 创建
++ var 变量名 map[key类型]value类型
++ 变量名 := map[key类型]value类型{}
++ make(map[key类型]value类型)
+
+```go
+func main(){
+	var m map[int]string
+	m1 := map[int]string{}
+	m2 := make(map[int]string)
+}
+```
+
+#### 初始化
+
+```go
+func main(){
+	var m /*map[int]string*/ = map[int]string{1:"张三", 2:"李四", 3:"王五"}
+	
+	m1 := map[int]string{1:"张三", 2:"李四", 3:"王五"}
+	
+	m2 := make(map[int]string)
+	m2[1] = "张三"
+	m2[2] = "李四"
+}
+//map[ 3:"王五" 1:"张三" 2:"李四"]
+```
+
+#### key/value
+`value,bool := map变量名[key]`: 获取map中key的值，如果value存在，则bool为true，否则为false
+
+```go
+func main(){
+	var m = map[int]string{1:"张三", 2:"李四", 3:"王五"}
+	value, ok := m[2]
+	if ok {
+		fmt.Println(value)
+	}else {
+		fmt.Println("not found")
+	}
+}
+```
+
+#### 遍历
+通过`for range`
+
+```go
+for k, v := range m {
+	
+}
+```
+
+#### 通过key删除值
+`delete(map变量名, key)`
+
+#### 函数参数
+
+``` go
+func test(m map[int]string) {
+	
+}
+```
+> 在函数中修改map的值，会影响到原map
+
+### 结构体
+结构体是由一系列具有相同类型或不同类型的数据构成的数据集合
+
+#### 创建及初始化
+`type 结构体名 struct{}`
+
+```go
+func main(){
+    type Student struct {
+    //成员名称前不能添加var
+        id int
+        name string
+        age int
+    }
+}
+```
+初始化方式：
+
++ 顺序初始化
++ 指定成员初始化
++ 通过"结构体变量.成员"方式初始化 (常用)
+
+```go
+func main(){
+    type Student struct {
+    //成员名称前不能添加var
+        id int
+        name string
+        age int
+    }
+    var s = Student{101, "张三", 18}
+    fmt.Println(s) //{101 "张三" 18}
+}
+```
+```go
+func main(){
+    var s1 = Student{name:"李四",age:11}
+    fmt.Println(s1) //{0 李四 11}
+}
+```
+```go
+func main(){
+    var std Student
+    stu.id= 102
+    stu.name = "王五"
+    stu.age = 20
+    fmt.Println(stu)
+}
+```
+#### 结构体数组
+
+```go
+type Student struct {
+    id int
+    name string
+    age int
+}
+func main(){
+    var arr = [3]Student{
+        {101, "张三", 18},
+        {102, "李四", 11},
+        {103, "王五", 20},
+    }
+    fmt.Println(arr)
+    //[{101 张三 18} {102 李四 11} {103 王五 20}]
+}
+```
+```go
+//循环遍历
+func main(){
+    for key, value := range arr {
+		fmt.Println(key, value)
+	}
+}
+0 {101 张三 18}
+1 {102 李四 11}
+2 {103 王五 20}
+```
+#### 结构体切片
+`var s = []Student{}`
+
+#### 结构体map
+`m := make(map[int]Student)`
+
+```go
+func main(){
+    m := make(map[int]Student)
+    m[0] = Student{101, "张三", 18}
+}   
+```
+
+> 在函数中修改结构体成员的值，不会影响原结构体
+
+### 指针
+是一个特殊的变量，存储的是另一个变量的内存地址
+`var 变量名 *类型`
+
+```go
+func main(){
+   var a = 10
+	var p *int
+	p = &a
+	fmt.Printf("%p\n", &a) //0xc000088000
+	fmt.Printf("%p\n", p)  //0xc000088000
+ 	fmt.Println(*p)   //10
+ 	//通过指针修改变量的值
+	*p = 20  
+	fmt.Println(a)   //20
+}
+
+```
+
+#### 空指针
+
+```go
+func main(){
+    var p *int
+    fmt.Println(p)   //<nil>
+}
+```
+野指针
+
+```go
+func main(){
+    var p *int
+	*p = 3
+	fmt.Println(p)
+	//panic: runtime error: invalid memory address or nil pointer dereference
+}
+```
+`new`函数: 开辟数据类型对应的内存空间，返回值为数据类型指针
+
+```go
+func main(){
+    var p *int
+    p = new(int)
+    *p  = 2
+	 fmt.Println(*p) //2
+}
+```
+#### 指针作为函数参数
+```go
+func update(p *int){
+	*p = 1
+}
+func main(){
+	var num int = 10
+
+	update(&num)
+	fmt.Println(num) //1
+}
+```
+#### 数组指针
+定义数组指针 : `var 变量名 *[长度]类型`
+
+```go
+func main(){
+    nums := [3]int{1,2,3}
+    var p *[3]int
+    p = &nums
+    fmt.Println(*p)      //[1 2 3]
+    fmt.Println((*p)[0]) //1
+    //[]的运算优先级高于*
+    fmt.Println(p[0])    //1  **切片中不能使用**
+    
+    updateArr(p)
+}
+```
+```go 
+//数组指针作为参数 
+func updateArr(p *[10]int){
+    p[0] = 10
+}
+```
+
+#### 指针数组
+是数组中存储的都是指针; 数组元素是指针
+`var 变量名 [长度]*类型`
+
+```go
+func main(){
+    var p[2]*int
+    var i = 10
+    var j = 20
+
+    p[0] = &i
+    p[1] = &j
+    fmt.Println(p)     //[0xc000018040 0xc000018048]
+}
+```
+#### 指针切片
+
+```go
+func main(){
+    s := []int{1,2,3}
+    var p *[]int
+    p = &s
+    fmt.Println(*p)       //[1 2 3]
+    fmt.Println((*p)[0])  //1
+    fmt.Println(p[0]) //invalid operation: p[0] (type *[]int does not support indexing)
+    
+    fmt.Println(p)    //&[1 2 3]
+}
+```
+```go
+for k, v := range *p {}
+```
+#### 结构体指针
+
+```go
+func main(){
+    stu := Student{101,  "张三",11}
+	var p *Student
+	p = &stu
+	fmt.Println(*p) 
+	fmt.Println((*p).age)  //11
+	p.age = 20     // 通过指针修改结构体成员变量
+	fmt.Println(p.age)     //20
+	
+	updateStruct(p)
+}
+```
+
+##### 作为函数参数
+
+```go
+func updateStruct(stu *Student){
+    stu.age = 22
+}
+```
+
+### 其他
+浅拷贝：只拷贝变量的值，
+深拷贝：将原有的变量的空间全部拷贝
+
+
