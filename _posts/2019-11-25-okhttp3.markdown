@@ -1,0 +1,676 @@
+---
+layout: post
+title:  "okhttp3部分源码分析"
+date:   2019-11-25 17:21:02 +0800
+categories: jekyll update
+tags: [java, okhttp3]
+---
+
+## okhttp3 部分分析
+[TOC]
+
+通过retrofit调用okhttp3 api，对okhttp3执行逻辑进行分析
+接上文，retrofit中OkHttpCall主要承接了对okhttp3 api的调用
+在retrofit中被调用的类有`OkHttpClient`(`OkHttpCall.createRawCall()`),
+`Request`,`HttpUrl`,`RequestBody`(`RequestBuilder.build()`),
+`Response`(`OkHttpCall.parseResponse()`),
+`Call`(`OkHttpCall.enqueue()`)
+`ResponseBody`(`Utils.buffer()`)
+### 泛型
+优点:
+1. 将运行时期出现问题ClassCastException,转移到了编译时期;方便于程序员解决问题,让运行时期问题减少,更安全
+2. 避免了强制转换麻烦
+
+#### 泛型类:
+什么时候定义泛型类？
+当类中要操作的引用数据类型不确定的时候，早期定义Object来完成扩展。现在定义泛型来完成扩展。
+`?`: 通配符。也可以理解为占位符。
+泛型的限定；用来支持泛型的扩展;
+`？ extends E`: 可以接收E类型或者E的子类型。上限。
+`？ super E`: 可以接收E类型或者E的父类型。下限
+
+```java
+public class Demo<T>{
+    private T t;
+    public void set(T t){
+        this.t = t;
+    }
+    public T get(){
+        return t;
+    }
+    public static void main(String[] args){
+        Demo<Integer> demo1 = new Demo<Integer>();
+        Demo<String> demo2 = new Demo<String>();
+        
+        demo1.set(new Integer(10));
+        System.out.printf("整数:%d\n",demo1.get());
+        
+        demo2.set("just test");
+        System.out.printf("string:%s\n",demo2.get());
+    }
+}
+//整数:10
+//string:just test
+```
+
+#### 泛型方法: 
+为了让不同方法可以操作不同类型,而且类型还不确定;那么可以讲泛型定义在方法上; 
+> 注意:泛型定义在方法上的位置,一定是在返回值类型前,方法修饰符后;其他位置报错;
+
+```java
+//静态方法上定义泛型;
+	public static <Q> void fun(Q q) {
+		System.out.println("fun="+q);
+	}
+	//将泛型定义在方法上;
+	public <T> T print(T t) {
+		System.out.println("print="+t);
+		return t;
+	}
+```
+`retrofit.create()`就是泛型方法
+> 泛型只在编译时有效，运行时无效
+
+### Java Deque
+### HttpUrl
+在retrofit中，调用`retrofit.builder.baseUrl()`时，使用了`HttpUrl.get(string)`;
+
+```java
+//源码中解释
+A uniform resource locator (URL) with a scheme of either {@code http} or {@code https}. Use this class to compose and decompose Internet addresses.
+//用于组成或分解网络地址，支持http和https
+```
+
+```java
+  public static HttpUrl get(String url) {
+    return new Builder().parse(null, url).build();
+  }
+```
+```java
+//builder.parse(null,url)
+Builder parse(@Nullable HttpUrl base, String input) {...}
+该方法校验url，包括scheme(http/https),host，port，path，fragment,username:password认证等；并做url编码
+```
+### RequestBody
+`requestBody.create()`
+
+### 锁
+
+### OkHttpClient
+在retrofit中，`OkHttpCall.createRawCall()`方法如下：
+
+```java
+//callFactory = OkHttpClient
+private okhttp3.Call createRawCall() throws IOException {
+    okhttp3.Call call = callFactory.newCall(requestFactory.create(args));
+    ...
+    return call;
+}
+```
+```java
+//OkHttpClient.java
+@Override 
+public Call newCall(Request request) {
+    return RealCall.newRealCall(this, request, false /* for web socket */);
+}
+```
+可见`request`参数通过`requestFactory.create()`创建
+
+`OkHttpClient`在okhttp中占有重要的地位，源码的部分解释如下
+
+```java
+Factory for {@linkplain Call calls}, which can be used to send HTTP requests and read their responses.
+//{@linkplain Call calls}的工厂，可用于发送HTTP请求并读取其响应。
+OkHttp performs best when you create a single {@code OkHttpClient} instance and reuse it for all of your HTTP calls. This is because each client holds its own connection pool and thread pools.
+//当您创建单个{@code OkHttpClient}实例并将其重用于所有HTTP调用时，Okhttp表现最佳。 这是因为每个客户端都拥有自己的连接池和线程池。
+Reusing connections and threads reduces latency and saves memory. Conversely, creating a client for each request wastes resources on idle pools.
+//重用连接和线程可以减少延迟并节省内存。相反，为每个请求创建客户端会浪费空闲池上的资源
+```
+## 责任链模式
+以下是责任链模式中用到的类;在`RealCall.getResponseWithInterceptorChain()`中体现该模式;
+
+```java
+Response getResponseWithInterceptorChain() throws IOException {
+    // Build a full stack of interceptors.
+    List<Interceptor> interceptors = new ArrayList<>();
+    interceptors.addAll(client.interceptors());
+    interceptors.add(retryAndFollowUpInterceptor);
+    interceptors.add(new BridgeInterceptor(client.cookieJar()));
+    interceptors.add(new CacheInterceptor(client.internalCache()));
+    interceptors.add(new ConnectInterceptor(client));
+    if (!forWebSocket) {
+      interceptors.addAll(client.networkInterceptors());
+    }
+    interceptors.add(new CallServerInterceptor(forWebSocket));
+//重要，责任链模式中会多次创建该对象；
+    Interceptor.Chain chain = new RealInterceptorChain(interceptors, null, null, null, 0,
+        originalRequest, this, eventListener, client.connectTimeoutMillis(),
+        client.readTimeoutMillis(), client.writeTimeoutMillis());
+
+    return chain.proceed(originalRequest);
+  }
+```
+```java
+public Response proceed(Request request, StreamAllocation streamAllocation, HttpCodec httpCodec,RealConnection connection) throws IOException {
+    ...
+    // Call the next interceptor in the chain.
+    //注意index+1,是获取下一个拦截器需要的下标，第一次传递0
+    RealInterceptorChain next = new RealInterceptorChain(interceptors, streamAllocation, httpCodec,
+        connection, index + 1, request, call, eventListener, connectTimeout, readTimeout,
+        writeTimeout);
+    //这里取出集合中的拦截器
+    Interceptor interceptor = interceptors.get(index);
+    //执行每个拦截器的拦截方法，传入责任链
+    Response response = interceptor.intercept(next);  
+    ...
+    return response;    
+}
+```
+
+
+统一实现接口`Interceptor`
+
+```java
+public interface Interceptor {
+  Response intercept(Chain chain) throws IOException;
+  interface Chain {
+    Request request();
+    /*重要的逻辑*/
+    Response proceed(Request request) throws IOException;
+    /**
+     * Returns the connection the request will be executed on. This is only available in the chains
+     * of network interceptors; for application interceptors this is always null.
+     */
+    @Nullable Connection connection();
+    Call call();
+    ...
+  }
+}
+```
+
+
+### RetryAndFollowUpInterceptor
+```java
+This interceptor recovers from failures and follows redirects as necessary. It may throw an {@link IOException} if the call was canceled
+//此拦截器从故障中恢复，并在必要时遵循重定向。 如果取消呼叫，它可能会抛出{@link IOException}
+```
+`RetryAndFollowUpInterceptor`在`RealCall`的构造函数中初始化
+
+```java
+//RealCall.java
+private RealCall(OkHttpClient client, Request originalRequest, boolean forWebSocket) {
+    this.client = client;
+    this.originalRequest = originalRequest;
+    this.forWebSocket = forWebSocket;
+    this.retryAndFollowUpInterceptor = new RetryAndFollowUpInterceptor(client, forWebSocket);
+  }
+```
+```java
+//RetryAndFollowUpInterceptor.intercept(Chain)
+@Override 
+public Response intercept(Chain chain) throws IOException {
+    Request request = chain.request();
+    RealInterceptorChain realChain = (RealInterceptorChain) chain;
+    Call call = realChain.call();
+    ...
+    StreamAllocation streamAllocation = new StreamAllocation(client.connectionPool(),
+        createAddress(request.url()), call, eventListener, callStackTrace);
+    ...
+    //交由责任链处理，执行下一个拦截器
+    response = realChain.proceed(request, streamAllocation, null, null);
+    ...      
+}
+```
+
+### BridgeInterceptor
+```java
+Bridges from application code to network code. First it builds a network request from a user request. Then it proceeds to call the network. Finally it builds a user response from the network response.
+//从应用程序代码到网络代码的桥梁。 首先，它根据用户请求构建网络请求。 然后它继续呼叫网络。 最后，它根据网络响应构建用户响应。
+```
+```java
+@Override 
+public Response intercept(Chain chain) throws IOException {
+    Request userRequest = chain.request();
+    Request.Builder requestBuilder = userRequest.newBuilder();
+    
+    ...填充http请求的头部信息`Cookie,User-Agent,Connection,Host`
+    //交由责任链处理，执行下一个拦截器
+    Response networkResponse = chain.proceed(requestBuilder.build());
+    ...
+    Response.Builder responseBuilder = networkResponse.newBuilder()
+        .request(userRequest);
+    ...
+    return responseBuilder.build();
+}
+```
+### CacheInterceptor
+```java
+Serves requests from the cache and writes responses to the cache
+//提供来自缓存的请求并将响应写入缓存
+```
+```java
+@Override 
+public Response intercept(Chain chain) throws IOException {
+    //TODO 先从缓冲中获取响应结果，
+    ...
+    //如果没有获取到，交由责任链处理，执行下一个拦截器
+    networkResponse = chain.proceed(networkRequest);
+    //TODO 缓存网络返回的结果
+    return 
+}
+```
+### ConnectInterceptor
+```java
+Opens a connection to the target server and proceeds to the next interceptor.
+//打开与目标服务器的连接，然后继续执行下一个拦截器。
+```
+```java
+@Override 
+public Response intercept(Chain chain) throws IOException {
+    RealInterceptorChain realChain = (RealInterceptorChain) chain;
+    Request request = realChain.request();
+    StreamAllocation streamAllocation = realChain.streamAllocation();
+
+    // We need the network to satisfy this request. Possibly for validating a conditional GET.
+    boolean doExtensiveHealthChecks = !request.method().equals("GET");
+    //http请求编码，响应解码，
+    HttpCodec httpCodec = streamAllocation.newStream(client, chain, doExtensiveHealthChecks);
+    RealConnection connection = streamAllocation.connection();
+    //交由责任链处理，执行下一个拦截器
+    //至此，proceed()中4个参数已陆续获取成功，第一次全部传递非空值
+    return realChain.proceed(request, streamAllocation, httpCodec, connection);
+  }
+```
+通过此拦截器创建网络连接所需对象，分析下`HttpCodec`和`RealConnection`对象的创建过程；
+
+```java
+//StreamAllocation.java
+public HttpCodec newStream(
+      OkHttpClient client, Interceptor.Chain chain, boolean doExtensiveHealthChecks) {
+    ...
+    try {
+      RealConnection resultConnection = findHealthyConnection(connectTimeout, readTimeout,
+          writeTimeout, pingIntervalMillis, connectionRetryEnabled, doExtensiveHealthChecks);
+          
+      HttpCodec resultCodec = resultConnection.newCodec(client, chain, this);
+
+      synchronized (connectionPool) {
+        codec = resultCodec;
+        return resultCodec;
+      }
+    } catch (IOException e) {
+      throw new RouteException(e);
+    }      
+}
+```
+```java
+private RealConnection findHealthyConnection(...){
+    ...
+    RealConnection real = findConnection(...);
+    ...
+    return real;
+}
+```
+```java
+//StreamAllocation.java
+//1.existing connection > 2.pool > 3.build new connection
+private RealConnection findConnection(int connectTimeout, int readTimeout, int writeTimeout,
+      int pingIntervalMillis, boolean connectionRetryEnabled) throws IOException {
+    ...
+    // Attempt to use an already-allocated connection. We need to be careful here because our
+    // already-allocated connection may have been restricted from creating new streams.
+    releasedConnection = this.connection;
+    toClose = releaseIfNoNewStreams();
+    if (this.connection != null) {
+    //1. We had an already-allocated connection and it's good.
+        result = this.connection;
+        releasedConnection = null;
+    }
+    if (!reportedAcquired) {
+    // If the connection was never reported acquired, don't report it as released!
+        releasedConnection = null;
+    }  
+    if (result == null) {
+    //2. Attempt to get a connection from the pool.
+        Internal.instance.get(connectionPool, address, this, null);
+        if (connection != null) {
+          foundPooledConnection = true;
+          result = connection;
+        } else {
+          selectedRoute = route;
+        }
+    }
+    if (result != null) {
+        // If we found an already-allocated or pooled connection, we're done.
+        return result;
+    }
+    ...     
+    //3. build new connection
+    result = new RealConnection(connectionPool, selectedRoute);
+    acquire(result, false);
+    ...
+    //*Do TCP + TLS handshakes. This is a blocking operation.客户端与服务器的连接
+    result.connect(connectTimeout, readTimeout, writeTimeout, pingIntervalMillis,
+        connectionRetryEnabled, call, eventListener);
+    routeDatabase().connected(result.route());
+    ...
+    return result;  
+}
+```
+```java
+//RealConnection.java 真正网络连接
+//result.connect();
+public void connect(int connectTimeout, int readTimeout, int writeTimeout,int pingIntervalMillis, boolean connectionRetryEnabled, Call call,EventListener eventListener) {
+    ...
+    if (route.requiresTunnel()) {
+        connectTunnel(connectTimeout, readTimeout, writeTimeout, call, eventListener);
+        if (rawSocket == null) {
+        // We were unable to connect the tunnel but properly closed down our resources.
+            break;
+        }
+    } else {
+        connectSocket(connectTimeout, readTimeout, call, eventListener);
+    }
+    establishProtocol(connectionSpecSelector, pingIntervalMillis, call, eventListener);
+    ...     
+}
+private void connectSocket(int connectTimeout, int readTimeout, Call call,EventListener eventListener) throws IOException {
+    ...
+    try {
+    //socket 连接
+      Platform.get().connectSocket(rawSocket, route.socketAddress(), connectTimeout);
+    } catch (ConnectException e) {
+      ConnectException ce = new ConnectException("Failed to connect to " + route.socketAddress());
+      ce.initCause(e);
+      throw ce;
+    }
+    try {
+    //初始化okio流，socket连接后，通过okio方式发送请求并接收响应结果
+      source=Okio.buffer(Okio.source(rawSocket));
+      sink = Okio.buffer(Okio.sink(rawSocket));
+    } catch (NullPointerException npe) {
+      if(NPE_THROW_WITH_NULL.equals(npe.getMessage())) {
+        throw new IOException(npe);
+      }
+    }
+}
+```
+
+### CallServerInterceptor
+```java
+This is the last interceptor in the chain. It makes a network call to the server.
+//这是链中的最后一个拦截器。 它向服务器进行网络调用。
+```
+网络请求及响应的拦截器，核心功能由`HttpCodec`完成,
+
+```java
+@Override 
+public Response intercept(Chain chain) throws IOException {
+    ...
+    //1.向okio中写请求头
+    httpCodec.writeRequestHeaders(request);
+    ...
+    
+    long contentLength = request.body().contentLength();
+    CountingSink requestBodyOut = new CountingSink(httpCodec.createRequestBody(request, contentLength));
+    BufferedSink bufferedRequestBody = Okio.buffer(requestBodyOut);
+    //2.写入请求体，RequestBody=request.body()
+    /*RequestBody是抽象类，通过create()返回匿名对象[create函数由多个]，writeTo()函数的实现需确定对象是由哪个create()方法创建
+    */
+    request.body().writeTo(bufferedRequestBody);
+    bufferedRequestBody.close();//关闭BufferedSink
+    ...
+    httpCodec.finishRequest();//结束写入，
+    
+    responseBuilder = httpCodec.readResponseHeaders(false);//获取响应头
+    Response response = responseBuilder
+        .request(request)
+        .handshake(streamAllocation.connection().handshake())
+        .sentRequestAtMillis(sentRequestMillis)
+        .receivedResponseAtMillis(System.currentTimeMillis())
+        .build();
+        
+    ...
+    
+    if (forWebSocket && code == 101) {
+      // Connection is upgrading, but we need to ensure interceptors see a non-null response body.
+      response = response.newBuilder()
+          .body(Util.EMPTY_RESPONSE)
+          .build();
+    } else {
+      response = response.newBuilder()
+          .body(httpCodec.openResponseBody(response))//获取响应体
+          .build();
+    }
+    ...
+    //至此，得到网络请求的完整响应结果
+    return response;
+}
+```
+以上就是okhttp使用责任链模式发送网络请求并获取响应结果的流程，接下来分析`HttpCodec`中真正发送请求并获取响应的逻辑，及责任链模式处理响应结果的流程；
+
+#### 1. 拼接请求行 writeRequestHeaders
+```java
+//Http1Codec.java
+@Override 
+public void writeRequestHeaders(Request request) throws IOException {
+//拼接请求行 like "GET / HTTP/1.1"
+    String requestLine = RequestLine.get(
+        request, streamAllocation.connection().route().proxy().type());
+    writeRequest(request.headers(), requestLine);
+}
+public void writeRequest(Headers headers, String requestLine) throws IOException {
+    if (state != STATE_IDLE) throw new IllegalStateException("state: " + state);
+    //通过okio输出流写出数据到服务端
+    sink.writeUtf8(requestLine).writeUtf8("\r\n");
+    for (int i = 0, size = headers.size(); i < size; i++) {
+      sink.writeUtf8(headers.name(i))
+          .writeUtf8(": ")
+          .writeUtf8(headers.value(i))
+          .writeUtf8("\r\n");
+    }
+    sink.writeUtf8("\r\n");
+    state = STATE_OPEN_REQUEST_BODY;
+}
+```
+#### 2. 请求体
+```java
+//引用intercept()中一段代码，
+long contentLength = request.body().contentLength();
+CountingSink requestBodyOut =new CountingSink(httpCodec.createRequestBody(request, contentLength));
+//创建缓冲输出流
+BufferedSink bufferedRequestBody = Okio.buffer(requestBodyOut);
+
+request.body().writeTo(bufferedRequestBody);
+bufferedRequestBody.close();
+```
+##### Http1Codec.createRequestBody
+```java
+@Override 
+public Sink createRequestBody(Request request, long contentLength) {
+    if ("chunked".equalsIgnoreCase(request.header("Transfer-Encoding"))) {//分块传输
+      // Stream a request body of unknown length.
+      return newChunkedSink();
+    }
+    if (contentLength != -1) {//一般执行这里
+      // Stream a request body of a known length.
+      return newFixedLengthSink(contentLength);
+    }
+    throw new IllegalStateException(
+        "Cannot stream a request body without chunked encoding or a known content length!");
+}
+public Sink newFixedLengthSink(long contentLength) {
+    if (state != STATE_OPEN_REQUEST_BODY) throw new IllegalStateException("state: " + state);
+    state = STATE_WRITING_REQUEST_BODY;
+    return new FixedLengthSink(contentLength);
+}
+```
+```java
+private final class FixedLengthSink implements Sink {
+    ...
+    @Override 
+    public void write(Buffer source, long byteCount) throws IOException {
+      if (closed) throw new IllegalStateException("closed");
+      checkOffsetAndCount(source.size(), 0, byteCount);
+      if (byteCount > bytesRemaining) {
+        throw new ProtocolException("expected " + bytesRemaining
+            + " bytes but received " + byteCount);
+      }
+      //使用sink写入buffer
+      sink.write(source, byteCount);
+      bytesRemaining -= byteCount;
+    }
+    ...
+}
+```
+##### request.body().writeTo
+```java
+//RequestBody.java
+public abstract class RequestBody {
+    /** Writes the content of this request to {@code sink}. */
+  public abstract void writeTo(BufferedSink sink) throws IOException;
+  /** Returns the Content-Type header for this body. */
+  public abstract @Nullable MediaType contentType();
+  public long contentLength() throws IOException {
+    return -1;
+  }
+  public static RequestBody create(
+      final @Nullable MediaType contentType, final ByteString content) {
+    return new RequestBody() {
+      @Override public @Nullable MediaType contentType() {
+        return contentType;
+      }
+
+      @Override public long contentLength() throws IOException {
+        return content.size();
+      }
+
+      @Override public void writeTo(BufferedSink sink) throws IOException {
+      //bufferSink.write();
+        sink.write(content);
+      }
+    };
+  }
+  ...
+}
+主要有3个函数及1个静态方法，此静态方法有重载，根据传入的参数不同，创建RequestBody主要分为3种方式；
+1.传入ByteString
+create(MediaType contentType, final ByteString content)
+2.传入byte[],指定起始位置，结束位置
+create(MediaType contentType, final byte[] content,final int offset, final int byteCount) 
+3.传入文件
+create(MediaType contentType, final File file)
+```
+#### 状态行 Http1Code.readResponseHeaders
+```java
+@Override 
+public Response.Builder readResponseHeaders(boolean expectContinue) throws IOException {
+    ...
+    //拼接状态行 "HTTP/1.1 200 OK"
+    StatusLine statusLine = StatusLine.parse(readHeaderLine());
+
+    Response.Builder responseBuilder = new Response.Builder()
+            .protocol(statusLine.protocol)
+            .code(statusLine.code)
+            .message(statusLine.message)
+            .headers(readHeaders());
+    ...
+    return responseBuilder;
+}
+```
+#### 响应主体 http1Codec.openResponseBody
+```java
+//Http1Codec.java
+@Override 
+public ResponseBody openResponseBody(Response response) throws IOException {
+    streamAllocation.eventListener.responseBodyStart(streamAllocation.call);
+    String contentType = response.header("Content-Type");
+
+    if (!HttpHeaders.hasBody(response)) {
+      Source source = newFixedLengthSource(0);
+      return new RealResponseBody(contentType, 0, Okio.buffer(source));
+    }
+
+    if ("chunked".equalsIgnoreCase(response.header("Transfer-Encoding"))) {
+      Source source = newChunkedSource(response.request().url());
+      return new RealResponseBody(contentType, -1L, Okio.buffer(source));
+    }
+//通常执行此处
+    long contentLength = HttpHeaders.contentLength(response);
+    if (contentLength != -1) {
+      Source source = newFixedLengthSource(contentLength);
+      return new RealResponseBody(contentType, contentLength, Okio.buffer(source));
+    }
+
+    return new RealResponseBody(contentType, -1L, Okio.buffer(newUnknownLengthSource()));
+}
+public Source newFixedLengthSource(long length) throws IOException {
+    if (state != STATE_OPEN_RESPONSE_BODY) throw new IllegalStateException("state: " + state);
+    state = STATE_READING_RESPONSE_BODY;
+    return new FixedLengthSource(length);
+  }
+```
+```java
+private class FixedLengthSource extends AbstractSource {
+    ...
+    @Override 
+    public long read(Buffer sink, long byteCount) throws IOException {
+        ...
+        long read = super.read(sink, Math.min(bytesRemaining, byteCount));
+        ...
+        return long;
+    }
+    ...
+}
+```
+```java
+private abstract class AbstractSource implements Source {
+    ...
+    @Override 
+    public long read(Buffer sink, long byteCount) throws IOException {
+      try {
+      //此处读取服务器返回数据
+        long read = source.read(sink, byteCount);
+        if (read > 0) {
+          bytesRead += read;
+        }
+        return read;
+      } catch (IOException e) {
+        endOfInput(false, e);
+        throw e;
+      }
+    }
+    ...
+}
+```
+以上是发送请求及响应结果的函数，核心是socket编程，关于[TCP socket编程](http://wiki.jikexueyuan.com/project/java-socket/tcp.html)这篇介绍的比较详细，后续在`okio`中会详细介绍
+
+### 返回流程分析
+在`CacheInterceptor.intercept`中，接收到返回值后，执行了缓冲机制
+
+
+#### ConnectionPool
+```java
+Manages reuse of HTTP and HTTP/2 connections for reduced network latency. HTTP requests that share the same {@link Address} may share a {@link Connection}. This class implements the policy of which connections to keep open for future use.
+//管理HTTP和HTTP/2连接的重用，以减少网络延迟。 共享相同{@link Address}的HTTP请求可以共享{@link Connection}。 此类实现了哪些连接保持打开以供将来使用的策略。
+```
+#### EventListener
+```java
+Listener for metrics events. Extend this class to monitor the quantity, size, and duration of your application's HTTP calls
+//指标事件的监听器。 扩展此类以监视应用程序的HTTP调用的数量，大小和持续时间
+```
+#### DNS
+```java
+A domain name service that resolves IP addresses for host names. Most applications will use the {@linkplain #SYSTEM system DNS service}, which is the default. Some applications may provide their own implementation to use a different DNS server, to prefer IPv6 addresses, to prefer IPv4 addresses, or to force a specific known IP address.
+//解析主机名IP地址的域名服务。 大多数应用程序将使用{@linkplain #SYSTEM系统DNS服务}，这是默认设置。 某些应用程序可能提供自己的实现来使用不同的DNS服务器，更喜欢IPv6地址，更喜欢IPv4地址，或强制使用特定的已知IP地址。
+```
+
+
+##TODO
+okhttp3.Request
+SSLSocket
+Route / RouteSelector
+
+### Other
+ HTTP/1.x连接一次可以携带1个流，HTTP/2通常携带多个。
+
