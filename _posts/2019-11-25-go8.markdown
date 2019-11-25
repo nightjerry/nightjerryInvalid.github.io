@@ -1,0 +1,429 @@
+---
+layout: post
+title:  "go8 生产者消费者模型"
+date:   2019-11-25 17:20:02 +0800
+categories: jekyll update
+tags: go
+---
+
+## 8 生产者消费者模型
+[TOC]
+###模型分析 
+缓冲区: 1. 解偶 (降低生产者，消费者的耦合度)
+        2. 并发 (生产者消费者数量不对等时，能保持正常通信)
+        3. 缓存 (生产者和消费者数据处理速度不一致时，暂存数据)
+        
+**有缓冲: 异步通信**
+**无缓冲: 同步通信**
+
+```go
+func main() {
+
+	ch := make(chan int, 5)
+
+	go producer(ch)
+
+	consumer(ch)
+}
+func consumer(in <-chan int){
+	for num := range in{
+		fmt.Println("消费者拿到: ", num)
+	}
+}
+func producer(out chan<-int){
+	for i:=0; i<10; i++ {
+		out <- i*i
+	}
+	close(out)
+}
+```
+
+### Timer定时器
+创建定时器，指定定时时长;定时到达后，系统会自动向定时器的成员C写系统当前时间;(对chan的写操作)
+读取Timer.C,得到定时后的系统时间,并且完成一次channel的读操作
+
+```go
+//源码
+type Timer struct{
+    C <-chan Time
+    r runtimeTimer
+}
+```
+```go
+//time.NewTimer
+func main(){
+    fmt.Println("当前时间: ", time.Now())
+	myTimer := time.NewTimer(time.Second * 2)
+	nowTime := <-myTimer.C
+	fmt.Println("现下时间:", nowTime)
+}
+当前时间:  2019-07-16 09:50:34.776106 +0800 CST m=+0.000379071
+现下时间: 2019-07-16 09:50:36.779502 +0800 CST m=+2.003729927
+```
+```go
+//time.After
+func main(){
+    fmt.Println("当前时间: ", time.Now())
+	nowTime := <-time.After(time.Second*2)
+	fmt.Println("现下时间:", nowTime)
+}  
+当前时间:  2019-07-16 10:02:04.123789 +0800 CST m=+0.000887641
+现下时间: 2019-07-16 10:02:06.126297 +0800 CST m=+2.003344603 
+```
+`time.Sleep()`
+
+```go
+func main(){
+    myTimer := time.NewTimer(time.Second *3)
+    myTimer.Reset(1 * time.Second) //重置定时时长为1
+    go func(){
+        <-myTimer.C
+    }()
+    myTimer.Stop() //设置定时器停止
+    for{;}
+}
+```
+#### 周期定时Ticker
+```go
+func main(){
+    quit := make(chan bool)
+	fmt.Println("当前时间: ", time.Now())
+	myTicker := time.NewTicker(time.Second)
+	i := 0
+	go func() {
+
+		for {
+			nowTime := <-myTicker.C
+			i++
+			fmt.Println("nowTime : ", nowTime)
+			if i == 3{
+				quit<- true //解除主go程阻塞
+			}
+		}
+	}()
+	<-quit
+}
+当前时间:  2019-07-16 10:35:29.786274 +0800 CST m=+0.001349884
+nowTime :  2019-07-16 10:35:30.790833 +0800 CST m=+1.005882210
+nowTime :  2019-07-16 10:35:31.789397 +0800 CST m=+2.004420216
+nowTime :  2019-07-16 10:35:32.788689 +0800 CST m=+3.003686470
+```
+
+### select
+监听channel上的数据流动
+select用法与switch类似; 区别是select有较多限制, 其中最大的限制就是每个case语句里**必须是一个IO操作**
+ 
+```go
+select{
+    case <-chan1:
+    //如果chan1成功读到数据，则进行该case处理语句
+    case chan2<- 1:
+    //如果成功向chan2写入数据，则进行该case处理语句
+    default:
+    
+}
+```
+如果其中的任意语句可以继续执行, 那么就从这些可以执行的语句中任意选择一条来使用; 
+如果没有任意语句可以执行(即所有通道都被阻塞),那么有两种可能的情况:
+
++ 有default, 执行default语句, 同时程序的执行会从default执行后恢复
++ 没有default, select语句将被阻塞, 直到至少一个通道可以进行下去
+ 
+```go
+func main() {
+
+	ch := make(chan int)
+	quit := make(chan bool)
+
+	go func() {
+		for i:=0;i <5; i++ {
+			ch <- i
+			time.Sleep(time.Second)
+		}
+		close(ch)
+		quit<- true
+		runtime.Goexit()
+	}()
+	for {
+		select {
+		case num := <-ch :
+				fmt.Println("read data = ", num)
+		case <-quit :
+			return
+		}
+		fmt.Println("=========")
+	}
+
+}
+```
+```go
+func main() {
+	ch := make(chan int)
+	quit := make(chan bool)
+
+	go func() {
+		for {
+			select {
+			case num := <-ch:
+				fmt.Println("num = ", num)
+
+			case <-time.After(2 * time.Second):
+				quit <- true
+				goto label //跳转到固定位置
+			}
+		}
+	label:
+		fmt.Println("break to label")
+	}()
+	for i := 0; i < 2; i++ {
+		ch <- i
+		time.Sleep(time.Second)
+	}
+	<-quit
+	fmt.Println("finish...")
+}
+num =  0
+num =  1
+break to label
+finish...
+```
+
+```go
+//斐波那契数列 1 1 2 3 5 8 13
+func main() {
+	ch := make(chan int)
+	quit := make(chan bool)
+
+	go fibonacci(ch, quit) //打印
+
+	x, y := 1, 1
+	for i := 0; i < 20; i++ {
+		ch<- x
+		x, y = y, x+y
+	}
+	quit <- true
+
+}
+func fibonacci(ch <-chan int, quit <-chan bool) {
+	for {
+		select {
+		case num := <-ch:
+			fmt.Printf("%d ", num)
+		case <-quit:
+			goto label
+			//return
+			//runtime.Goexit()
+		}
+	}
+	label:
+}
+//主go程写，子go程读
+1 1 2 3 5 8 13 21 34 55 89 144 233 377 610 987 1597 2584 4181 6765 
+```
+```go
+//子go程写，主go程读
+func main() {
+
+	ch := make(chan int)
+	quit := make(chan bool)
+
+	go func() {
+		x, y := 1, 1
+		for i := 0; i < 10; i++ {
+			ch <- x
+			x, y = y, x+y
+		}
+		quit <- true
+	}()
+
+	for {
+		select {
+		case num := <-ch:
+			fmt.Printf("%d ", num)
+		case <-quit:
+			goto label
+			//return
+		}
+	}
+label:
+
+}
+```
+### 死锁
+两个或两个以上的进程在执行过程中，由于竞争资源或彼此通信而造成的一种**阻塞的现象**
+
++ 单go程自己死锁
++ go程间channel访问顺序导致死锁
++ 多go程，多channel交叉死锁
++ 尽量不要将互斥锁, 读写锁与channel混用--隐形死锁
+
+```go
+//单go程自己死锁
+func main() {
+	ch := make(chan int)
+	ch<- 12 //此处发生阻塞
+	num := <-ch
+	fmt.Println("num = ",num)
+}
+fatal error: all goroutines are asleep - deadlock
+```
+```go
+//go程间channel访问顺序导致死锁
+func main(){
+	ch := make(chan int)
+	num := <-ch //(先读后写, 所以死锁)
+	fmt.Println("num = ", num)
+	go func() {
+		ch <- 12
+	}()
+}
+```
+```go
+//多go程，多channel交叉死锁
+func main() {
+	ch1 := make(chan int)
+	ch2 := make(chan int)
+
+	go func() {
+		for {
+			select {
+			case num := <-ch1:
+				ch2 <- num
+			}
+		}
+	}()
+	for {
+		select {
+		case num := <-ch2:
+			ch1 <- num
+		}
+	}
+}
+```
+### 互斥锁 `sync.Mutex`
+```go
+var mutex sync.Mutex //创建一个互斥量，状态为0，未加锁
+func main() {
+	go person1()
+	go person2()
+
+	for{;}
+}
+func printer(str string){
+	mutex.Lock() //访问共享数据之前，加锁
+	for _, ch := range str{
+		fmt.Printf("%c", ch)
+		time.Sleep(time.Millisecond * 200)
+	}
+	mutex.Unlock()
+}
+func person1(){
+	printer("hello")
+}
+func person2(){
+	printer("world")
+}
+```
+> 建议锁: 操作系统提供，建议编程时使用. 上层调用普遍为建议锁,系统底层实现有强制锁
+
+### 读写锁 sync.RWMutex
++ 对写操作的锁定和解锁: `func (*RWMutex)Lock()/Unlock()`
++ 对读操作的锁定和解锁 `func (*RWMutex)RLock()/RUnlock()`
+
+### 条件变量
+条件变量并不保证在同一时刻仅有一个协程访问某个共享的数据资源; 而是对应的共享数据的状态发生变化时，通知阻塞在某个条件上的协程.
+> 条件变量不是锁，在并发中不能达到同步的目的，常与锁一起使用
+`sync.Cond`
+
+```go
+type Cond struct {
+    noCopy noCopy
+    L Locker
+    notify notifyList
+    checker copyChecker 
+}
+func (c *Cond)Wait()
+func (c *Cond)Signal()
+func (c *Cond)Broadcast()
+```
+`Wait()`: 
+
++ 阻塞等待条件变量满足
++ 释放已掌握的互斥锁，相当于`cond.L.Unlock()`;(以上两步为**原子操作**)
++ 当被唤醒, Wait函数返回时, 解除阻塞并重新获取互斥锁. 相当于`cond.L.Lock()`
+
+`Signal()`:
+单发通知，给正在(等待)阻塞在**该条件变量**上的goroutine发送通知
+`Broadcast()`:
+广播通知，给正在(等待)阻塞在**该条件变量**上的所有goroutine发通知
+
+```go
+// 创建全局条件变量
+var cond sync.Cond
+func main() {
+	product := make(chan int,5 )
+	rand.Seed(time.Now().UnixNano())
+	//指定条件变量使用的锁
+	cond.L = new(sync.Mutex) // 创建互斥锁和条件变量
+
+	for i:=0; i< 5;i++ {
+		go producer(product, i)
+	}
+	for i:=0;i<5;i++ {
+		go consumer(product, i)
+	}
+	for{;}
+}
+
+func producer(out chan<- int, idx int) {
+	for  {
+		cond.L.Lock()
+		for len(out) == cap(out){
+			cond.Wait()
+		}
+		num := rand.Intn(800)
+		out <- num
+		fmt.Printf("生产者%d 生产%d\n",idx,num)
+		cond.L.Unlock() // 生产结束，解锁互斥锁
+		//唤醒阻塞在条件变量上的对端
+		cond.Signal()
+		time.Sleep(time.Millisecond * 200)
+	}
+	close(out)
+}
+func consumer(in <-chan int, idx int) {
+	for  {
+		cond.L.Lock()
+		for len(in) == 0{
+			cond.Wait() //挂起当前协程， 等待条件变量满足，被生产者唤醒
+		}
+		num := <- in
+		fmt.Printf("---消费者%d 消费%d \n", idx,num)
+		cond.L.Unlock() //消费结束，解锁互斥锁
+		cond.Signal() //唤醒 阻塞的 生产者
+		time.Sleep(time.Millisecond * 200)
+	}
+}
+生产者1 生产247
+生产者4 生产463
+生产者0 生产209
+---消费者1 消费247 
+---消费者0 消费463 
+---消费者2 消费209 
+生产者3 生产274
+---消费者3 消费274 
+生产者2 生产704
+---消费者4 消费704 
+生产者3 生产723
+---消费者4 消费723 
+生产者4 生产24
+---消费者3 消费24 
+生产者2 生产160
+---消费者1 消费160 
+生产者0 生产481
+生产者1 生产631
+---消费者0 消费481 
+---消费者2 消费631 
+```
+
+
