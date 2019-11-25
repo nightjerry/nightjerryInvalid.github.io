@@ -1,0 +1,920 @@
+---
+layout: post
+title:  "retrofit源码分析"
+date:   2019-11-25 16:36:02 +0800
+categories: jekyll update
+tags: [java, retrofit]
+---
+
+# retrofit 源码分析
+[TOC]
+
+## 源码执行流程
+### new Retrofit.Builder().baseUrl(xx).build()
+基于retrofit 2.4.1
+#### Retrofit.Builder()
+创建retrofit实例对象，通过`new Retrofit.Builder().build()`;Builder作为Retrofit的静态内部类
+Retrofit.Builder类有3个构造函数，分别为
+
+```java
+public static final class Builder {
+...
+    Builder(Platform platform) {
+        this.platform = platform;
+    }
+    public Builder() { 
+        this(Platform.get());
+    }
+    Builder(Retrofit retrofit) { ... }
+...
+}
+```
+只有无参的构造函数提供了外部访问权限`public`,其它两个都是包内访问；通过`platform.get()`获取Platform对象,我在android平台使用，所以返回的是`Android`;代码如下
+
+```java
+class Platform {
+    private static final Platform PLATFORM = findPlatform();
+    
+    static Platform get(){
+        return PLATFORM;
+    }
+    private static Platform findPlatform() {
+        try {
+          Class.forName("android.os.Build");
+          if (Build.VERSION.SDK_INT != 0) {
+            return new Android();
+          }
+        } catch (ClassNotFoundException ignored) {
+        }
+        try {
+          Class.forName("java.util.Optional");
+          return new Java8();
+        } catch (ClassNotFoundException ignored) {
+        }
+        return new Platform();
+  }
+}
+```
+#### baseUrl
+Retrofit.Builder类中方法遵循链式调用规则(即方法返回this,使用`.`调用下一个方法)；例如
+
+```java
+...
+public Builder addConverterFactory(Converter.Factory factory){
+    converterFactories.add(checkNotNull(factory,"factory == null"));
+    return this;
+}
+public Builder callbackExecutor(Executor executor) {
+    this.callbackExecutor = checkNotNull(executor, "executor == null");
+    return this;
+}
+...
+```
+> `baseUrl`必须以'/'结尾
+
+#### build()
+`Retrofit.Builder().build()`通过`建造者模式`，创建Retrofit对象；
+对相关变量进行初始化，有`CallFactory`,`CallAdapter.Factory`,`Converter.Factory`,`Executor`,并以此为参数创建Retrofit
+
+``` java
+public Retrofit build() {
+    if (baseUrl == null) {
+        throw new IllegalStateException("Base URL required.");
+    }
+    //CallFactory = OkHttpClient
+    okhttp3.Call.Factory callFactory = this.callFactory;
+    if (callFactory == null) {
+        callFactory = new OkHttpClient();
+    }
+    //Executor = Android.MainThreadExecutor  
+    Executor callbackExecutor = this.callbackExecutor;
+    if (callbackExecutor == null) {
+        callbackExecutor = platform.defaultCallbackExecutor();
+    }  
+    //CallAdapter.Factory = ExecutorCallAdapterFactory
+    List<CallAdapter.Factory> callAdapterFactories = new ArrayList<>(this.callAdapterFactories);
+    callAdapterFactories.add(platform.defaultCallAdapterFactory(callbackExecutor));
+    //Converter.Factory = BuiltInConverters
+    List<Converter.Factory> converterFactories =
+          new ArrayList<>(1 + this.converterFactories.size());
+    converterFactories.add(new BuiltInConverters());
+    converterFactories.addAll(this.converterFactories);
+    
+    return new Retrofit(callFactory, baseUrl, unmodifiableList(converterFactories),
+          unmodifiableList(callAdapterFactories), callbackExecutor, validateEagerly);
+    
+}
+```
+Platform.Android源码：它是Platform的子类，且是静态内部类；
+
+``` java
+static class Android extends Platform {
+    @IgnoreJRERequirement // Guarded by API check.
+    @Override boolean isDefaultMethod(Method method) {
+      if (Build.VERSION.SDK_INT < 24) {
+        return false;
+      }
+      return method.isDefault(); //false
+    }
+
+    @Override public Executor defaultCallbackExecutor() {
+      return new MainThreadExecutor();
+    }
+
+    @Override CallAdapter.Factory defaultCallAdapterFactory(@Nullable Executor callbackExecutor) {
+      if (callbackExecutor == null) throw new AssertionError();
+      return new ExecutorCallAdapterFactory(callbackExecutor);
+    }
+
+    static class MainThreadExecutor implements Executor {
+      private final Handler handler = new Handler(Looper.getMainLooper());
+
+      @Override public void execute(Runnable r) {
+        handler.post(r);
+      }
+    }
+  }
+```
+
+### IHttp ihttp = retrofit.create(IHttp.class)
+`IHttp`为使用者自定义接口,我自定义了`post`方法
+
+``` java
+public interface IHttp {
+    @POST("{url}")
+    Call<ResponseBody> post(@Path(value = "url", encoded = true) String url,
+                            @HeaderMap Map<String, String> headers,
+                            @Body RequestBody body);
+}    
+```
+#### create()
+通过`retrofit.create`获取接口实例对象,此处使用了`动态代理设计模式`
+
+``` java
+public <T> T create(final Class<T> service) {
+    Utils.validateServiceInterface(service);
+    if (validateEagerly) {
+      eagerlyValidateMethods(service);
+    }
+    
+    return (T) Proxy.newProxyInstance(service.getClassLoader(), new Class<?>[] { service },
+        new InvocationHandler() {
+          private final Platform platform = Platform.get();
+
+          @Override public Object invoke(Object proxy, Method method, @Nullable Object[] args)
+              throws Throwable {
+            // If the method is a method from Object then defer to normal invocation.
+            if (method.getDeclaringClass() == Object.class) {
+              return method.invoke(this, args);
+            }
+            if (platform.isDefaultMethod(method)) {
+              return platform.invokeDefaultMethod(method, service, proxy, args);
+            }
+            return loadServiceMethod(method).invoke(args);
+          }
+        });
+}
+```
+其中，`method.getDeclaringClass`返回IHttp中post方法的返回值类型；
+
+``` java
+ServiceMethod<?> loadServiceMethod(Method method) {
+    ServiceMethod<?> result = serviceMethodCache.get(method);
+    if (result != null) return result;
+
+    synchronized (serviceMethodCache) {
+      result = serviceMethodCache.get(method);
+      if (result == null) {
+        result = ServiceMethod.parseAnnotations(this, method);
+        serviceMethodCache.put(method, result);
+      }
+    }
+    return result;
+  }
+```
+### 执行接口方法,得到`Call<ResponseBody>`
+调用接口的方法`ihttp.post()`，得到返回值;源码中执行到`proxy.invoke()`; `loadServiceMethod()`，最后执行到`serviceMethod.invoke()`;
+
+#### ServiceMethod
+ServiceMethod是抽象类，子类是`HttpServiceMethod`; 同样通过建造者模式获取HttpServiceMethod对象
+
+``` java
+abstract class ServiceMethod<T> {
+  static <T> ServiceMethod<T> parseAnnotations(Retrofit retrofit, Method method) {
+    Type returnType = method.getGenericReturnType();
+    if (Utils.hasUnresolvableType(returnType)) {
+      throw methodError(method,
+          "Method return type must not include a type variable or wildcard: %s", returnType);
+    }
+    if (returnType == void.class) {
+      throw methodError(method, "Service methods cannot return void.");
+    }
+
+    return new HttpServiceMethod.Builder<Object, T>(retrofit, method).build();
+  }
+
+  abstract T invoke(@Nullable Object[] args);
+}
+```
+``` java
+//HttpServiceMethod.Builder， 构造函数参数来源：method： Proxy.invoke的第二个参数
+    Builder(Retrofit retrofit, Method method) {
+      this.retrofit = retrofit;
+      this.method = method;
+    }
+
+    HttpServiceMethod<ResponseT, ReturnT> build() {
+      requestFactory = RequestFactory.parseAnnotations(retrofit, method);//[1]
+
+      callAdapter = createCallAdapter();//[2]
+      responseType = callAdapter.responseType();
+      if (responseType == Response.class || responseType == okhttp3.Response.class) {
+        throw methodError(method, "'"
+            + Utils.getRawType(responseType).getName()
+            + "' is not a valid response body type. Did you mean ResponseBody?");
+      }
+      responseConverter = createResponseConverter();//[3]
+
+      if (requestFactory.httpMethod.equals("HEAD") && !Void.class.equals(responseType)) {
+        throw methodError(method, "HEAD method must use Void as response type.");
+      }
+
+      return new HttpServiceMethod<>(this);
+    }
+```
+#### [1]requestFactory:解析网络请求方式及请求地址路径
+在HttpServiceMethod.Builder.build()方法中，有解析注解的函数调用[1] `requestFactory = RequestFactory.parseAnnotations(retrofit, method);`
+
+``` java 
+final class RequestFactory {
+  static RequestFactory parseAnnotations(Retrofit retrofit, Method method) {
+    return new Builder(retrofit, method).build();
+  }
+}
+```
+```java
+//RequestFactory.Builder的构造函数只进行了变量赋值，此处省略代码
+RequestFactory build(){
+    for (Annotation annotation : methodAnnotations){
+        parseMethodAnnotation(annotation);
+    }
+    ...
+    return new RequestFactory(this);
+}
+private void parseMethodAnnotation(Annotation annotation) {
+    if (annotation instanceof DELETE) {
+        parseHttpMethodAndPath("DELETE", ((DELETE) annotation).value(), false);
+    }else if (annotation instanceof POST) { //我使用post
+        parseHttpMethodAndPath("POST", ((POST) annotation).value(), true); //.value取出url地址；path路径
+    }
+    ...
+}
+private void parseHttpMethodAndPath(String httpMethod, String value, boolean hasBody) {
+    if (this.httpMethod != null) {
+        throw methodError(method, "Only one HTTP method is allowed. Found: %s and %s.",
+        this.httpMethod, httpMethod);
+      }
+    this.httpMethod = httpMethod;
+    this.hasBody = hasBody;
+
+    if (value.isEmpty()) {
+        return;
+    }
+
+      // Get the relative URL path and existing query string, if present.
+    int question = value.indexOf('?');
+    if (question != -1 && question < value.length() - 1) {
+        // Ensure the query string does not have any named parameters.
+    String queryParams = value.substring(question + 1);
+    Matcher queryParamMatcher = PARAM_URL_REGEX.matcher(queryParams);
+    if (queryParamMatcher.find()) {
+        throw methodError(method, "URL query string \"%s\" must not have replace block. "
+              + "For dynamic query parameters use @Query.", queryParams);
+        }
+    }
+
+    this.relativeUrl = value;//通过注解取出
+    this.relativeUrlParamNames = parsePathParameters(value);
+
+}
+```
+#### [2]创建CallAdapter对象
+在HttpServiceMethod.Builder.build()方法中，调用[2]创建`CallAdapter对象`
+`callAdapter = createCallAdapter();`,实际上通过retrofit中`CallAdapter.Factory`变量获取,也就是`ExecutorCallAdapterFactory.get()`
+
+```java
+//HttpServiceMethod.Builder
+private CallAdapter<ResponseT, ReturnT> createCallAdapter() {
+    Type returnType = method.getGenericReturnType();
+    Annotation[] annotations = method.getAnnotations();
+    try {
+        return (CallAdapter<ResponseT, ReturnT>) retrofit.callAdapter(returnType, annotations);
+    } catch (RuntimeException e) { 
+        throw methodError(method, e, "Unable to create call adapter for %s", returnType);
+    }
+}
+```
+```java
+//Retrofit
+public CallAdapter<?, ?> callAdapter(Type returnType, Annotation[] annotations) {
+    return nextCallAdapter(null, returnType, annotations);
+}
+//adapter= ExecutorCallAdapterFactory.get()
+public CallAdapter<?, ?> nextCallAdapter(@Nullable CallAdapter.Factory skipPast, Type returnType,
+      Annotation[] annotations) {
+    checkNotNull(returnType, "returnType == null");
+    checkNotNull(annotations, "annotations == null");
+
+    int start = callAdapterFactories.indexOf(skipPast) + 1;
+    for (int i = start, count = callAdapterFactories.size(); i < count; i++) {
+      CallAdapter<?, ?> adapter = callAdapterFactories.get(i).get(returnType, annotations, this);//ExecutorCallAdapterFactory.get()
+      if (adapter != null) {
+        return adapter; 
+      }
+    }
+```
+```java
+final class ExecutorCallAdapterFactory extends CallAdapter.Factory{
+    ...
+  @Override
+  public CallAdapter<?, ?> get(Type returnType, Annotation[] annotations, Retrofit retrofit) {
+    if (getRawType(returnType) != Call.class) {
+      return null;
+    }
+    final Type responseType = Utils.getCallResponseType(returnType);
+    //这就是HttpServiceMethod中的callAdapter
+    return new CallAdapter<Object, Call<?>>() {
+      @Override public Type responseType() {
+        return responseType;
+      }
+
+      @Override public Call<Object> adapt(Call<Object> call) {
+        return new ExecutorCallbackCall<>(callbackExecutor, call);
+      }
+    };
+  }
+    ...
+}
+```
+#### [3]创建Converter对象
+在HttpServiceMethod.Builder.build()方法中，调用[3]创建`Converter对象`
+`responseConverter = createResponseConverter()`
+实际上调用retrofit中的`BuiltInConverters.responseBodyConverter`
+
+```java
+//HttpServiceMethod.Builder.java
+private Converter<ResponseBody, ResponseT> createResponseConverter() {
+    Annotation[] annotations = method.getAnnotations();
+    try {
+        return retrofit.responseBodyConverter(responseType, annotations);
+    } catch (RuntimeException e) {
+        throw methodError(method, e, "Unable to create converter for %s", responseType);
+    }
+}
+```
+```java
+//Retrofit.java
+//Converter = BuiltInConverters.responseBodyConverter()
+public <T> Converter<ResponseBody, T> responseBodyConverter(Type type, Annotation[] annotations) {
+    return nextResponseBodyConverter(null, type, annotations);
+}
+public <T> Converter<ResponseBody, T> nextResponseBodyConverter(
+      @Nullable Converter.Factory skipPast, Type type, Annotation[] annotations) {
+    checkNotNull(type, "type == null");
+    checkNotNull(annotations, "annotations == null");
+
+    int start = converterFactories.indexOf(skipPast) + 1;
+    for (int i = start, count = converterFactories.size(); i < count; i++) {
+      Converter<ResponseBody, ?> converter =
+          converterFactories.get(i).responseBodyConverter(type, annotations, this);//BuiltInConverters.responseBodyConverter()
+    if (converter != null) {
+        //noinspection unchecked
+        return (Converter<ResponseBody, T>) converter;
+    }
+}
+```
+```java
+//BuiltInConverters.java
+// converter = BufferingResponseBodyConverter.INSTANCE
+final class BuiltInConverters extends Converter.Factory {
+  @Override
+  public Converter<ResponseBody, ?> responseBodyConverter(Type type, Annotation[] annotations,
+      Retrofit retrofit) {
+    if (type == ResponseBody.class) {
+      return Utils.isAnnotationPresent(annotations, Streaming.class)
+          ? StreamingResponseBodyConverter.INSTANCE
+          : BufferingResponseBodyConverter.INSTANCE;
+    }//
+    if (type == Void.class) {
+      return VoidResponseBodyConverter.INSTANCE;
+    }
+    return null;
+  }
+  ...
+}
+```
+以上分析完`ServiceMethod`创建过程，主要节点在[1][2][3]中
+
+#### 动态代理invoke的执行逻辑
+`loadServiceMethod(method).invoke(args)`
+`loadServiceMethod()`返回ServiceMethod对象，其`invoke`为抽象方法，子类`HttpServiceMethod.invoke`的具体实现如下
+
+```java
+//HttpServiceMethod.java
+@Override ReturnT invoke(@Nullable Object[] args) {
+    return callAdapter.adapt(
+        new OkHttpCall<>(requestFactory, args, callFactory, responseConverter));
+}
+//callAdapter为[2]ExecutorCallAdapterFactory.get()
+//requestFacotry为[1]
+//callFactory为retrofit.callFactory,就是Retrofit.Builder中的OkHttpClient
+//responseConverter为[3]
+```
+```java
+final class OkHttpCall<T> implements Call<T>
+```
+```java
+//ExecutorCallAdapterFactory.java
+@Override
+public CallAdapter<?, ?> get(Type returnType, Annotation[] annotations, Retrofit retrofit) {
+    ...
+    return new CallAdapter<Object, Call<?>>() {
+      @Override public Type responseType() {
+        return responseType;
+      }
+//callbackExecutor为retrofit.callbackExecutor，就是Android.MainThreadExecutor
+//call： OkHttpCall
+      @Override public Call<Object> adapt(Call<Object> call) {
+        return new ExecutorCallbackCall<>(callbackExecutor, call);
+      }
+    };
+}
+
+static final class ExecutorCallbackCall<T> implements Call<T> {
+    ...  
+}
+```
+在自定义的IHttp接口中，post请求返回值为`Call<ResponseBody>`, `ExecutorCallbackCall`即是该返回值
+
+### 执行网络请求
+通过执行`ihttp.post()`得到的Call对象，执行`call.enqueue()`
+> `enqueue`为异步请求；`execute`为同步请求
+
+#### call.enqueue
+ExecutorCallbackCall代码如下,是ExecutorCallAdapterFactory的内部类
+
+```java
+//ExecutorCallAdapterFactory.java
+static final class ExecutorCallbackCall<T> implements Call<T> {
+    ...
+//callbackExecutor为retrofit.callbackExecutor，就是Android.MainThreadExecutor
+//delegate： OkHttpCall
+    ExecutorCallbackCall(Executor callbackExecutor, Call<T> delegate) {
+      this.callbackExecutor = callbackExecutor;
+      this.delegate = delegate;
+    }
+//callback：由使用者传入，网络请求回调
+    @Override public void enqueue(final Callback<T> callback) {
+      checkNotNull(callback, "callback == null");
+
+      delegate.enqueue(new Callback<T>() {
+        @Override public void onResponse(Call<T> call, final Response<T> response) {
+        ...
+        }
+
+        @Override public void onFailure(Call<T> call, final Throwable t) {
+         ...        }
+      });
+    }
+    ...
+}
+```
+
+#### 调用okhttp
+
+OkHttpCall调用okhttp中api实现网络请求，并接收请求结果
+
+```java
+//OkHttpCall.java
+@Override 
+public void enqueue(final Callback<T> callback) {
+    checkNotNull(callback, "callback == null");
+
+    okhttp3.Call call;
+    Throwable failure;
+
+    synchronized (this) {
+      if (executed) throw new IllegalStateException("Already executed.");
+      executed = true;
+
+      call = rawCall;
+      failure = creationFailure;
+      if (call == null && failure == null) {
+        try {
+          call = rawCall = createRawCall();//[1]
+        } catch (Throwable t) {
+          throwIfFatal(t);
+          failure = creationFailure = t;
+        }
+      }
+    }
+    if (failure != null) {
+      callback.onFailure(this, failure);
+      return;
+    }
+
+    if (canceled) {
+      call.cancel();
+    }
+    call.enqueue(new okhttp3.Callback() { //[2]
+      @Override public void onResponse(okhttp3.Call call, okhttp3.Response rawResponse) {
+        Response<T> response;
+        try {
+          response = parseResponse(rawResponse);//[3]
+        } catch (Throwable e) {
+          throwIfFatal(e);
+          callFailure(e);
+          return;
+        }
+
+        try {
+          callback.onResponse(OkHttpCall.this, response);
+        } catch (Throwable t) {
+          t.printStackTrace();
+        }
+      }
+
+      @Override public void onFailure(okhttp3.Call call, IOException e) {
+        callFailure(e);
+      }
+
+      private void callFailure(Throwable e) {
+        try {
+          callback.onFailure(OkHttpCall.this, e);
+        } catch (Throwable t) {
+          t.printStackTrace();
+        }
+      }
+    });
+}
+```
+```java
+//callFactory : OkHttpClient, retrofit中创建，HttpServiceMethodz中传入
+//[1]
+private okhttp3.Call createRawCall() throws IOException {
+    okhttp3.Call call = callFactory.newCall(requestFactory.create(args));
+    if (call == null) {
+      throw new NullPointerException("Call.Factory returned null.");
+    }
+    return call;
+}
+```
+此处对`requestFactory.create(args)`进行说明
+
+```java
+//RequestFactory.java
+okhttp3.Request create(@Nullable Object[] args) throws IOException {
+    RequestBuilder requestBuilder = new RequestBuilder(httpMethod, baseUrl, relativeUrl, headers,
+        contentType, hasBody, isFormEncoded, isMultipart);
+
+    @SuppressWarnings("unchecked") // It is an error to invoke a method with the wrong arg types.
+    ParameterHandler<Object>[] handlers = (ParameterHandler<Object>[]) parameterHandlers;
+
+    int argumentCount = args != null ? args.length : 0;
+    if (argumentCount != handlers.length) {
+      throw new IllegalArgumentException("Argument count (" + argumentCount
+          + ") doesn't match expected count (" + handlers.length + ")");
+    }
+
+    for (int p = 0; p < argumentCount; p++) {
+      handlers[p].apply(requestBuilder, args[p]);
+    }
+
+    return requestBuilder.build();
+}
+```
+`requestBuilder.build()`函数内调用okhttp3中api，拼装请求信息
+
+```java
+//[2]:通过okhttp3执行enqueue,并创建okhttp3.Callback
+//[3]:解析返回值
+Response<T> parseResponse(okhttp3.Response rawResponse) throws IOException {
+    ResponseBody rawBody = rawResponse.body();
+
+    // Remove the body's source (the only stateful object) so we can pass the response along.
+    rawResponse = rawResponse.newBuilder()
+        .body(new NoContentResponseBody(rawBody.contentType(), rawBody.contentLength()))
+        .build();
+
+    int code = rawResponse.code();
+    if (code < 200 || code >= 300) {
+      try {
+        // Buffer the entire body to avoid future I/O.
+        ResponseBody bufferedBody = Utils.buffer(rawBody);
+        return Response.error(bufferedBody, rawResponse);
+      } finally {
+        rawBody.close();
+      }
+    }
+
+    if (code == 204 || code == 205) {
+      rawBody.close();
+      return Response.success(null, rawResponse);
+    }
+
+    ExceptionCatchingResponseBody catchingBody = new ExceptionCatchingResponseBody(rawBody);
+    try {
+      T body = responseConverter.convert(catchingBody);//[4]
+      return Response.success(body, rawResponse);
+    } catch (RuntimeException e) {
+      // If the underlying source threw an exception, propagate that rather than indicating it was
+      // a runtime exception.
+      catchingBody.throwIfCaught();
+      throw e;
+    }
+}
+```
+```java
+//[4]responseConverter为BuiltInConverters.responseBodyConverter(),本次分析使用的是BufferingResponseBodyConverter
+
+//BuiltInConverters.java
+static final class BufferingResponseBodyConverter
+      implements Converter<ResponseBody, ResponseBody> {
+    static final BufferingResponseBodyConverter INSTANCE = new BufferingResponseBodyConverter();
+
+    @Override public ResponseBody convert(ResponseBody value) throws IOException {
+      try {
+        // Buffer the entire body to avoid future I/O.
+        return Utils.buffer(value);
+      } finally {
+        value.close();
+      }
+    }
+}
+
+```
+```java
+//Utils.java, 此处涉及okhttp3，下篇讨论
+static ResponseBody buffer(final ResponseBody body) throws IOException {
+    Buffer buffer = new Buffer();//com.squareup.okio
+    body.source().readAll(buffer);
+    return ResponseBody.create(body.contentType(), body.contentLength(), buffer);
+  }
+```
+#### 回调
+在ExecutorCallbackCall中，`delegate.enqueue`传入了匿名对象`callback`,匿名对象中由`callbackExecutor.execute`调用使用值传入的callback
+
+```java
+//ExecutorCallbackCall.class
+@Override public void enqueue(final Callback<T> callback) {
+      checkNotNull(callback, "callback == null");
+
+      delegate.enqueue(new Callback<T>() {
+        @Override public void onResponse(Call<T> call, final Response<T> response) {
+          callbackExecutor.execute(new Runnable() {
+            @Override public void run() {
+              if (delegate.isCanceled()) {
+                // Emulate OkHttp's behavior of throwing/delivering an IOException on cancellation.
+                callback.onFailure(ExecutorCallbackCall.this, new IOException("Canceled"));
+              } else {
+                callback.onResponse(ExecutorCallbackCall.this, response);
+              }
+            }
+          });
+        }
+
+        @Override public void onFailure(Call<T> call, final Throwable t) {
+          callbackExecutor.execute(new Runnable() {
+            @Override public void run() {
+              callback.onFailure(ExecutorCallbackCall.this, t);
+            }
+          });
+        }
+      });
+}
+//callbackExecutor为retrofit.callbackExecutor,就是Android.MainThreadExecutor    
+```
+```java
+//Platform.java
+static class MainThreadExecutor implements Executor {
+      private final Handler handler = new Handler(Looper.getMainLooper());
+
+      @Override public void execute(Runnable r) {
+        handler.post(r);
+      }
+}
+```
+至此，已分析完retrofit源码，其中核心逻辑涉及okhttp3，会单独写一篇进行分析
+
+## 源码设计模式
+### 建造者模式(Builder Pattern)
+将一个复杂对象的构建与它的表示分离，使同样的构建过程可以创建不同的表示.
+属于创建型模式，它提供了一种创建对象的最佳方式。
+何时使用：
+
+* 一些基本部件不会变，而其组合经常变化的时候。
+* 复杂的对象,有很多大量组成部分,过程很复杂; Builder模式就是为了将部件与组装过程分开
+
+优点：
+
+* 建造者独立，易扩展
+* 便于控制细节风险
+
+缺点：
+
+* 产品必须有共同点，范围有限制
+* 如内部变化复杂，会有很多的建造类
+
+> 注意事项：与工厂模式的区别是：建造者模式更加关注与零件装配的顺序
+
+结合retrofit源码中的使用场景，进行举例
+
+retrofit中`Retrofit`和`HttpServiceMethod`对象的创建就是通过建造者模式；
+实现方式： 在类中创建静态内部类Builder，Builder提供外部访问权限，定义相关变量的set方法，并定义`build`函数最终创建外部类对象. Builder中函数遵循链式调用规则
+
+```java
+//Retrofit.java
+public static final class Builder {
+    public Builder() {...}
+    
+    public Builder callFactory(okhttp3.Call.Factory factory) {
+      this.callFactory = checkNotNull(factory, "factory == null");
+      return this;
+    }
+    public Builder callbackExecutor(Executor executor) {
+      this.callbackExecutor = checkNotNull(executor, "executor == null");
+      return this;
+    }
+    ...
+    //创建外部类对象
+    public Retrofit build() {
+      if (baseUrl == null) {
+        throw new IllegalStateException("Base URL required.");
+      }
+      okhttp3.Call.Factory callFactory = this.callFactory;
+      if (callFactory == null) {
+        callFactory = new OkHttpClient();
+      }
+      Executor callbackExecutor = this.callbackExecutor;
+      if (callbackExecutor == null) {
+        callbackExecutor = platform.defaultCallbackExecutor();
+      }
+      List<CallAdapter.Factory> callAdapterFactories = new ArrayList<>(this.callAdapterFactories);
+      callAdapterFactories.add(platform.defaultCallAdapterFactory(callbackExecutor));
+      List<Converter.Factory> converterFactories =
+          new ArrayList<>(1 + this.converterFactories.size());
+      converterFactories.add(new BuiltInConverters());
+converterFactories.addAll(this.converterFactories);
+//给各变量赋值，并以此为参数创建Retrofit对象
+      return new Retrofit(callFactory, baseUrl, unmodifiableList(converterFactories),
+          unmodifiableList(callAdapterFactories), callbackExecutor, validateEagerly);
+    }
+}
+
+//Retrofit构造函数可见性为`default`,本包内可见
+Retrofit(okhttp3.Call.Factory callFactory, HttpUrl baseUrl,
+      List<Converter.Factory> converterFactories, List<CallAdapter.Factory> callAdapterFactories,
+      @Nullable Executor callbackExecutor, boolean validateEagerly) {
+    this.callFactory = callFactory;
+    this.baseUrl = baseUrl;
+    this.converterFactories = converterFactories; // Copy+unmodifiable at call site.
+    this.callAdapterFactories = callAdapterFactories; // Copy+unmodifiable at call site.
+    this.callbackExecutor = callbackExecutor;
+    this.validateEagerly = validateEagerly;
+}
+```
+如果参数过多或不统一，可使用Builder为参数创建外部类，如HttpServiceMethod的创建方式
+
+```java
+//HttpServiceMethod.java
+static final class Builder<ResponseT, ReturnT> {
+    ...
+    HttpServiceMethod<ResponseT, ReturnT> build() {
+        ...
+        return new HttpServiceMethod<>(this);
+    }
+}
+
+HttpServiceMethod(Builder<ResponseT, ReturnT> builder) {
+    requestFactory = builder.requestFactory;
+    callFactory = builder.retrofit.callFactory();
+    callAdapter = builder.callAdapter;
+    responseConverter = builder.responseConverter;
+}
+```
+
+### 代理模式(Proxy Pattern)
+属于结构型模式
+为其他对象提供一种代理以控制对这个对象的访问
+
+何时使用：
+
+* 程序可能不希望用户直接访问该对象，而是提供一个特殊的对象以控制对当前对象的访问
+* 如果对象位于远程主机上，需要为用户提供访问该远程对象的能力
+* 如果一个对象（例如很大的图像）需要很长时间才能完成加载
+
+优点：
+
+* 代理模式可以屏蔽用户真正请求的对象，是用户程序和正在的对象解耦
+* 使用代理来担当那些创建耗时的对象的替身
+
+缺点：
+代理类和委托类实现相同的接口，同时要实现相同的方法。这样就出现了大量的代码重复。如果接口增加一个方法，除了所有实现类需要实现这个方法外，所有代理类也需要实现此方法。增加了代码维护的复杂度。
+
+#### 静态代理
+需要定义接口或者父类,被代理对象与代理对象一起实现相同的接口或者是继承相同父类.
+
+> 注意:代理对象与目标对象要实现相同的接口,然后通过调用相同的方法来调用目标对象的方法
+
+```java
+public interface IUserDao {
+    void save();
+}
+//目标对象
+public class UserDao implements IUserDao {
+    public void save() {
+        System.out.println("----已经保存数据!----");
+    }
+}
+//代理对象
+public class UserDaoProxy implements IUserDao{
+    //接收保存目标对象
+    private IUserDao target;
+    public UserDaoProxy(IUserDao target){
+        this.target=target;
+    }
+
+    public void save() {
+        System.out.println("开始事务...");
+        target.save();//执行目标对象的方法
+        System.out.println("提交事务...");
+    }
+}
+public class App {
+    public static void main(String[] args) {
+        //目标对象
+        UserDao target = new UserDao();
+        //代理对象,把目标对象传给代理对象,建立代理关系
+        UserDaoProxy proxy = new UserDaoProxy(target);
+        proxy.save();//执行的是代理的方法
+    }
+}
+```
+
+#### 动态代理
+也叫JDK代理,接口代理
+
+* 在运行期，通过反射机制创建一个实现了一组给定接口的新类
+* 接口中声明的所有方法都被转移到调用处理器一个集中的方法中处理（InvocationHandler.invoke).在接口方法数量比较多的时候，我们可以进行灵活处理，而不需要像静态代理那样每一个方法进行中转。而且动态代理的应用使我们的类职责更加单一，复用性更强
+* 在运行时生成的class，必须提供一组interface给它，然后该class就宣称它实现了这些 interface
+
+代理类所在包:`java.lang.reflect.Proxy`
+
+```java
+static Object newProxyInstance(ClassLoader loader, Class [] interfaces, InvocationHandler handler)
+```
+注意该方法是在Proxy类中是静态方法,且接收的三个参数依次为:
+
+* ClassLoader loader:指定当前目标对象使用类加载器,用null表示默认类加载器
+* Class [] interfaces:需要实现的接口数组
+* InvocationHandler handler:调用处理器,执行目标对象的方法时,会触发调用处理器的方法,从而把当前执行目标对象的方法作为参数传入
+
+`java.lang.reflect.InvocationHandler`：这是调用处理器接口，它自定义了一个 invoke 方法，用于集中处理在动态代理类对象上的方法调用，通常在该方法中实现对委托类的代理访问。
+
+```java
+// 该方法负责集中处理动态代理类上的所有方法调用。第一个参数既是代理类实例，第二个参数是被调用的方法对象
+// 第三个方法是调用参数。
+Object invoke(Object proxy, Method method, Object[] args)
+```
+retrofit中就是使用了动态代理模式，调用时传入`.class`对象,返回接口实例对象
+
+```java
+//Retrofit.java
+public <T> T create(final Class<T> service) {
+    ...
+    return (T) Proxy.newProxyInstance(service.getClassLoader(), new Class<?>[] { service },
+        new InvocationHandler() {
+          private final Platform platform = Platform.get();
+
+          @Override public Object invoke(Object proxy, Method method, @Nullable Object[] args)
+              throws Throwable {
+            // If the method is a method from Object then defer to normal invocation.
+            if (method.getDeclaringClass() == Object.class) {
+              return method.invoke(this, args);
+            }
+            if (platform.isDefaultMethod(method)) {
+              return platform.invokeDefaultMethod(method, service, proxy, args);
+            }
+            return loadServiceMethod(method).invoke(args);
+          }
+        });
+}
+```
+```java
+//IHttp为自定义接口
+IHttp ihttp = retrofit.create(IHttp.class);
+```
+
+## 注解
+
+
