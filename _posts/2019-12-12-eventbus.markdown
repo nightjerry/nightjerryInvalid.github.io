@@ -9,12 +9,12 @@ categories: jekyll update
 tags: [java android]
 ---
 
-## EventBus源码分析
+# EventBus源码分析
 [TOC]  
 
 通过使用，分析eventbus源码实现
-### EventBus.getDefault().register(this);
-#### EventBus.getDefault()
+## 1. EventBus.getDefault().register(this);
+### 1.1 EventBus.getDefault()
 
 ```java
 //使用双重校验锁(DCL)单例模式
@@ -32,7 +32,7 @@ public static EventBus getDefault() {
         return instance;
     }
 ```
-##### new EventBus()
+#### new EventBus()
 
 ```java
 private static final EventBusBuilder DEFAULT_BUILDER = new EventBusBuilder();
@@ -87,7 +87,7 @@ EventBus(EventBusBuilder builder) {
         executorService = builder.executorService;
     }
 ```
-##### new EventBusBuilder & getMainThreadSupport  
+#### new EventBusBuilder & getMainThreadSupport  
 ```java
 EventBusBuilder() {}
 
@@ -117,7 +117,7 @@ Object getAndroidMainLooperOrNull() {
         }
     }
 ```
-##### MainThreadSupport  
+#### MainThreadSupport  
 ```java
 public interface MainThreadSupport {
 
@@ -146,7 +146,7 @@ public interface MainThreadSupport {
 
 }
 ```
-##### HandlerPoster  
+#### HandlerPoster  
 ```java
 public class HandlerPoster extends Handler implements Poster {
 
@@ -162,7 +162,7 @@ public class HandlerPoster extends Handler implements Poster {
         queue = new PendingPostQueue();
     }
 ```
-#### register()  
+### 1.2 register()  
 ```java
 public void register(Object subscriber) {
 //获取订阅者的class对象 -- "class 包名.类名"
@@ -179,7 +179,7 @@ public void register(Object subscriber) {
  *SubscriberMethod: 包含Method对象，响应订阅的线程ThreadMode，事件类型eventType，优先级priority,是否接收粘性sticky事件的boolean值
  */
 ```
-##### subscriberMethodFinder.findSubscriberMethods  
+#### subscriberMethodFinder.findSubscriberMethods  
 ```java
 private static final Map<Class<?>, List<SubscriberMethod>> METHOD_CACHE = new ConcurrentHashMap<>();
 
@@ -227,7 +227,7 @@ private List<SubscriberMethod> findUsingInfo(Class<?> subscriberClass) {
         return getMethodsAndRelease(findState);
     }
 ```
-##### create SubscriberMethod & add to list
+#### create SubscriberMethod & add to list
 ```java
 private void findUsingReflectionInSingleClass(FindState findState) {
         Method[] methods;
@@ -271,7 +271,7 @@ private void findUsingReflectionInSingleClass(FindState findState) {
         }
     }
 ```
-##### 加入到状态池中
+#### 加入到状态池中
 ```java
 private List<SubscriberMethod> getMethodsAndRelease(FindState findState) {
         List<SubscriberMethod> subscriberMethods = new ArrayList<>(findState.subscriberMethods);
@@ -287,7 +287,7 @@ private List<SubscriberMethod> getMethodsAndRelease(FindState findState) {
         return subscriberMethods;
     }
 ```
-##### subscribe(必须在同步代码块里调用)  
+#### subscribe(必须在同步代码块里调用)  
 ```java
 private void subscribe(Object subscriber, SubscriberMethod subscriberMethod) {
 //订阅事件
@@ -346,7 +346,7 @@ private void subscribe(Object subscriber, SubscriberMethod subscriberMethod) {
         }
     }
 ```
-### EventBus.getDefault().post("hello world");  
+## 2. EventBus.getDefault().post("hello world");  
 ```java
 public void post(Object event) {
         PostingThreadState postingState = currentPostingThreadState.get();
@@ -373,7 +373,7 @@ public void post(Object event) {
     }
 
 ```
-#### currentPostingThreadState.get  
+### currentPostingThreadState.get  
 ```java
 private final ThreadLocal<PostingThreadState> currentPostingThreadState = new ThreadLocal<PostingThreadState>() {
         @Override
@@ -446,7 +446,7 @@ ThreadLocal可能导致内存泄漏，伪内存泄漏.
 > 内存泄漏(Memory Leak): 对象永远无法被垃圾回收导致其占用java虚拟机内存无法被释放. 持续的内存泄漏导致jvm内存减少，jvm内存溢出，甚至jvm宕机
 > 伪内存泄漏： 对象占用的内存空间可能会被回收，也可能无法被回收
 
-##### ThreadLocal 内部实现
+#### ThreadLocal 内部实现
 每个线程内部会维护一个类似HashMap的对象，称为`ThreadLocalMap`
 ThreadLocalMap内部有若干`Entry`(key/value结构), Entry的key为`ThreadLocal实例`,value为`TSO`.
 Entry对ThreadLocal对象的引用是一个`弱引用(weak Reference)`,不会阻止被引用的ThreadLocal实例被垃圾回收,当被回收后，Entry的key置为null.此时Entry为`无效条目(stale entry)`
@@ -465,14 +465,14 @@ A[Thread] -->|threadLocals|B[ThreadLocalMap]
 
 在web应用中，为规避ThreadLocal可能导致的(伪)内存泄漏,使用`javax.servlet.Filter`接口实现类的`doFilter`方法中调用`ThreadLocal.remove()`
 
-##### **TSO**(线程特有对象)应用场景
+#### **TSO**(线程特有对象)应用场景
 
 * 使用了非线程安全对象，又不引入锁
 * 使用了线程安全对象，希望避免使用的锁的开销及相关问题
 * 隐式参数传递
 * 特定于线程的单例模式
 
-#### PostingThreadState  
+### PostingThreadState  
 
 ```java
 final static class PostingThreadState {
@@ -485,7 +485,7 @@ final static class PostingThreadState {
     }
 ```
 
-#### postSingleEvent  
+### postSingleEvent  
 
 ```java
 private void postSingleEvent(Object event, PostingThreadState postingState) throws Error {
@@ -514,7 +514,7 @@ private void postSingleEvent(Object event, PostingThreadState postingState) thro
     }
 ```
 
-##### postSingleEventForEventType  
+#### postSingleEventForEventType  
 
 ```java
 //根据事件类型eventType发送单个事件
@@ -550,7 +550,7 @@ private boolean postSingleEventForEventType(Object event, PostingThreadState pos
     }
 ```
 
-##### postToSubscription  
+#### postToSubscription  
 
 ```java
 //分发给订阅者
@@ -591,7 +591,7 @@ private void postToSubscription(Subscription subscription, Object event, boolean
     }
 ```
 
-#### invokeSubscriber
+### invokeSubscriber
 
 ```java
 void invokeSubscriber(Subscription subscription, Object event) {
@@ -605,7 +605,7 @@ void invokeSubscriber(Subscription subscription, Object event) {
         }
     }
 ```
-##### ThreadMode.Main
+#### ThreadMode.Main
 当事件需要在主线程执行时，首先判断当前线程是否为主线程，如果是，直接调用`invokeSubscriber()`函数；如果不是，添加到主线程事件处理队列中。主线程事件处理的类是`HandlerPoster`
 ```java
 public class HandlerPoster extends Handler implements Poster {
@@ -661,7 +661,7 @@ public class HandlerPoster extends Handler implements Poster {
                 //发送事件
                 eventBus.invokeSubscriber(pendingPost);
                 long timeInMethod = SystemClock.uptimeMillis() - started;
-                //超过时间间隔，再次sendMessage
+                //超过时间间隔，再次sendMessage, (保证10s内handler执行结束)
                 if (timeInMethod >= maxMillisInsideHandleMessage) {
                     if (!sendMessage(obtainMessage())) {
                         throw new EventBusException("Could not send handler message");
@@ -691,7 +691,7 @@ void invokeSubscriber(PendingPost pendingPost) {
 ```
 简而言之，主线程的事件就是通过Handler处理，内部维护一个队列`PendingPostQueue`，`PendingPostQueue`内部存储的是`PendingPost`
 
-##### 事件任务 - PendingPost 
+#### 事件任务 - PendingPost 
 ```java
 final class PendingPost {
 //事件缓存池
@@ -734,7 +734,7 @@ final class PendingPost {
     }
 }
 ```
-##### 任务队列 - PendingPostQueue
+#### 任务队列 - PendingPostQueue
 ```java
 final class PendingPostQueue { //FIFO
     private PendingPost head;//队头
@@ -774,7 +774,7 @@ final class PendingPostQueue { //FIFO
     }
 }
 ```
-##### ThreadMode.ASYNC
+#### ThreadMode.ASYNC
 ```java
 //没有同步锁
 class AsyncPoster implements Runnable, Poster {
@@ -819,10 +819,10 @@ new ThreadPoolExecutor(0, Integer.MAX_VALUE, 60L, TimeUnit.SECONDS, new Synchron
 ```
 这里为什么用Executor，而不是直接使用Thread.start()?[^a]
 
-##### ThreadMode.BACKGROUND
+#### ThreadMode.BACKGROUND
 后台线程与异步线程同样实现了`Runnable`接口, 区别是后台线程在入队出队时使用了同步锁，而异步线程没有
 
-#### 强引用，软引用，弱引用
+### 强引用，软引用，弱引用
 
 | 引用类型                | 被垃圾回收时间 | 用途           | 生存时间          |
 | --- | --- | --- | --- |
@@ -830,7 +830,7 @@ new ThreadPoolExecutor(0, Integer.MAX_VALUE, 60L, TimeUnit.SECONDS, new Synchron
 | 软引用(SoftReference) | 在内存不足时 | 对象缓存 | 内存不足时终止 |
 | 弱引用(weakReference) | 在垃圾回收时 | 对象缓存 | gc运行后终止 |
 
-### EventBus.getDefault().unregister(this)
+## 3. EventBus.getDefault().unregister(this)
 
 解除注册  
 
@@ -852,7 +852,7 @@ public synchronized void unregister(Object subscriber) {
     }
 ```
 
-#### unsubscribeByEventType 解除事件/订阅者关系
+### unsubscribeByEventType 解除事件/订阅者关系
 
 ```java
 private void unsubscribeByEventType(Object subscriber, Class<?> eventType) {
