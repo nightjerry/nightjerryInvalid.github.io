@@ -1,0 +1,897 @@
+---
+layout: post
+title:  "EventBus源码分析"
+subtitle:   "EventBus源码分析"
+date:   2019-12-12 15:38:00 +0800
+author: jerry
+header-img: "img/avatar.jpg"
+categories: jekyll update
+tags: [java android]
+---
+
+## EventBus源码分析
+[TOC]  
+
+通过使用，分析eventbus源码实现
+### EventBus.getDefault().register(this);
+#### EventBus.getDefault()
+
+```java
+//使用双重校验锁(DCL)单例模式
+static volatile EventBus defaultInstance;
+public static EventBus getDefault() {
+        EventBus instance = defaultInstance;
+        if (instance == null) {
+            synchronized (EventBus.class) {
+                instance = EventBus.defaultInstance;
+                if (instance == null) {
+                    instance = EventBus.defaultInstance = new EventBus();
+                }
+            }
+        }
+        return instance;
+    }
+```
+##### new EventBus()
+
+```java
+private static final EventBusBuilder DEFAULT_BUILDER = new EventBusBuilder();
+
+private final Map<Class<?>, CopyOnWriteArrayList<Subscription>> subscriptionsByEventType;
+private final Map<Object, List<Class<?>>> typesBySubscriber;
+private final Map<Class<?>, Object> stickyEvents;
+
+private final MainThreadSupport mainThreadSupport;
+private final Poster mainThreadPoster;
+private final BackgroundPoster backgroundPoster;
+private final AsyncPoster asyncPoster;
+private final SubscriberMethodFinder subscriberMethodFinder;
+
+private final boolean eventInheritance;
+    
+public EventBus() {
+        this(DEFAULT_BUILDER);
+    }
+
+EventBus(EventBusBuilder builder) {
+        logger = builder.getLogger();
+        //***key:订阅的事件，value: 订阅这个事件的所有订阅者集合
+        subscriptionsByEventType = new HashMap<>();
+  
+        //***key:订阅者对象，value: 订阅者订阅的事件集合
+        typesBySubscriber = new HashMap<>();
+  
+        //粘性事件 key:粘性事件的class对象, value:事件对象
+        stickyEvents = new ConcurrentHashMap<>();
+ 
+        mainThreadSupport = builder.getMainThreadSupport();
+         //事件主线程处理
+        mainThreadPoster = mainThreadSupport != null ? mainThreadSupport.createPoster(this) : null;
+        //事件 Background 处理
+        backgroundPoster = new BackgroundPoster(this);
+        //事件异步线程处
+        asyncPoster = new AsyncPoster(this);
+        indexCount = builder.subscriberInfoIndexes != null ? builder.subscriberInfoIndexes.size() : 0;
+        
+        //订阅者响应函数信息存储和查找类
+        subscriberMethodFinder = new SubscriberMethodFinder(builder.subscriberInfoIndexes/*null*/,
+                builder.strictMethodVerification/*false*/, builder.ignoreGeneratedIndex/*false*/);
+                
+        logSubscriberExceptions = builder.logSubscriberExceptions;
+        logNoSubscriberMessages = builder.logNoSubscriberMessages;
+        sendSubscriberExceptionEvent = builder.sendSubscriberExceptionEvent;
+        sendNoSubscriberEvent = builder.sendNoSubscriberEvent;
+        throwSubscriberException = builder.throwSubscriberException;
+        //是否支持事件继承
+        eventInheritance = builder.eventInheritance;
+        executorService = builder.executorService;
+    }
+```
+##### new EventBusBuilder & getMainThreadSupport  
+```java
+EventBusBuilder() {}
+
+MainThreadSupport getMainThreadSupport() {
+//首次调用为null
+        if (mainThreadSupport != null) {
+            return mainThreadSupport;
+        } else if (AndroidLogger.isAndroidLogAvailable()) {
+        //判断是否为android设备
+            Object looperOrNull = getAndroidMainLooperOrNull();
+            //创建MainThreadSupport
+            return looperOrNull == null ? null :
+                    new MainThreadSupport.AndroidHandlerMainThreadSupport((Looper) looperOrNull);
+        } else {
+            return null;
+        }
+    }
+```
+```java
+//获取looper对象
+Object getAndroidMainLooperOrNull() {
+        try {
+            return Looper.getMainLooper();
+        } catch (RuntimeException e) {
+            // Not really a functional Android (e.g. "Stub!" maven dependencies)
+            return null;
+        }
+    }
+```
+##### MainThreadSupport  
+```java
+public interface MainThreadSupport {
+
+    boolean isMainThread();
+
+    Poster createPoster(EventBus eventBus);
+//内部实现类
+    class AndroidHandlerMainThreadSupport implements MainThreadSupport {
+
+        private final Looper looper;
+
+        public AndroidHandlerMainThreadSupport(Looper looper) {
+            this.looper = looper;
+        }
+
+        @Override
+        public boolean isMainThread() {
+            return looper == Looper.myLooper();
+        }
+
+        @Override
+        public Poster createPoster(EventBus eventBus) {
+            return new HandlerPoster(eventBus, looper, 10);
+        }
+    }
+
+}
+```
+##### HandlerPoster  
+```java
+public class HandlerPoster extends Handler implements Poster {
+
+    private final PendingPostQueue queue;
+    private final int maxMillisInsideHandleMessage;
+    private final EventBus eventBus;
+    private boolean handlerActive;
+
+    protected HandlerPoster(EventBus eventBus, Looper looper, int maxMillisInsideHandleMessage) {
+        super(looper);
+        this.eventBus = eventBus;
+        this.maxMillisInsideHandleMessage = maxMillisInsideHandleMessage;
+        queue = new PendingPostQueue();
+    }
+```
+#### register()  
+```java
+public void register(Object subscriber) {
+//获取订阅者的class对象 -- "class 包名.类名"
+        Class<?> subscriberClass = subscriber.getClass();
+        //通过subscriberMethodFinder来找到订阅者订阅了哪些事件
+        List<SubscriberMethod> subscriberMethods = subscriberMethodFinder.findSubscriberMethods(subscriberClass);
+        synchronized (this) {
+            for (SubscriberMethod subscriberMethod : subscriberMethods) {
+                subscribe(subscriber, subscriberMethod);
+            }
+        }
+    }
+/*
+ *SubscriberMethod: 包含Method对象，响应订阅的线程ThreadMode，事件类型eventType，优先级priority,是否接收粘性sticky事件的boolean值
+ */
+```
+##### subscriberMethodFinder.findSubscriberMethods  
+```java
+private static final Map<Class<?>, List<SubscriberMethod>> METHOD_CACHE = new ConcurrentHashMap<>();
+
+List<SubscriberMethod> findSubscriberMethods(Class<?> subscriberClass) {
+//从缓存中取，取到直接返回
+        List<SubscriberMethod> subscriberMethods = METHOD_CACHE.get(subscriberClass);
+        if (subscriberMethods != null) {
+            return subscriberMethods;
+        }
+ //是否忽略注解器生成的MyEventBusIndex类,默认false
+        if (ignoreGeneratedIndex) {
+        //利用反射来读取订阅类中的订阅方法信息
+            subscriberMethods = findUsingReflection(subscriberClass);
+        } else {
+            subscriberMethods = findUsingInfo(subscriberClass);
+        }
+        if (subscriberMethods.isEmpty()) {
+            throw new EventBusException("Subscriber " + subscriberClass
+                    + " and its super classes have no public methods with the @Subscribe annotation");
+        } else {
+            METHOD_CACHE.put(subscriberClass, subscriberMethods);
+            return subscriberMethods;
+        }
+    }
+```
+```java
+private List<SubscriberMethod> findUsingInfo(Class<?> subscriberClass) {
+        FindState findState = prepareFindState();
+        findState.initForSubscriber(subscriberClass);
+        while (findState.clazz != null) {
+            findState.subscriberInfo = getSubscriberInfo(findState);
+            if (findState.subscriberInfo != null) {
+                SubscriberMethod[] array = findState.subscriberInfo.getSubscriberMethods();
+                for (SubscriberMethod subscriberMethod : array) {
+                    if (findState.checkAdd(subscriberMethod.method, subscriberMethod.eventType)) {
+                        findState.subscriberMethods.add(subscriberMethod);
+                    }
+                }
+            } else {
+            //使用反射获取
+        findUsingReflectionInSingleClass(findState);
+            }
+            findState.moveToSuperclass();
+        }
+        return getMethodsAndRelease(findState);
+    }
+```
+##### create SubscriberMethod & add to list
+```java
+private void findUsingReflectionInSingleClass(FindState findState) {
+        Method[] methods;
+        try {
+            // This is faster than getMethods, especially when subscribers are fat classes like Activities
+            methods = findState.clazz.getDeclaredMethods();
+        } catch (Throwable th) {
+            // Workaround for java.lang.NoClassDefFoundError, see https://github.com/greenrobot/EventBus/issues/149
+            methods = findState.clazz.getMethods();
+            findState.skipSuperClasses = true;
+        }
+        //遍历方法
+        for (Method method : methods) {
+            int modifiers = method.getModifiers();
+            if ((modifiers & Modifier.PUBLIC) != 0 && (modifiers & MODIFIERS_IGNORE) == 0) {
+                //获取参数列表数组
+                Class<?>[] parameterTypes = method.getParameterTypes();
+                //
+                if (parameterTypes.length == 1) {
+                    //获取注解
+                    Subscribe subscribeAnnotation = method.getAnnotation(Subscribe.class);
+                    if (subscribeAnnotation != null) {
+                        Class<?> eventType = parameterTypes[0];
+                        if (findState.checkAdd(method, eventType)) {
+                            ThreadMode threadMode = subscribeAnnotation.threadMode();
+                            //创建subscriberMethod并加入到集合中
+                            findState.subscriberMethods.add(new SubscriberMethod(method, eventType, threadMode,
+                                    subscribeAnnotation.priority(), subscribeAnnotation.sticky()));
+                        }
+                    }
+                } else if (strictMethodVerification && method.isAnnotationPresent(Subscribe.class)) {
+                    String methodName = method.getDeclaringClass().getName() + "." + method.getName();
+                    throw new EventBusException("@Subscribe method " + methodName +
+                            "must have exactly 1 parameter but has " + parameterTypes.length);
+                }
+            } else if (strictMethodVerification && method.isAnnotationPresent(Subscribe.class)) {
+                String methodName = method.getDeclaringClass().getName() + "." + method.getName();
+                throw new EventBusException(methodName +
+                        " is a illegal @Subscribe method: must be public, non-static, and non-abstract");
+            }
+        }
+    }
+```
+##### 加入到状态池中
+```java
+private List<SubscriberMethod> getMethodsAndRelease(FindState findState) {
+        List<SubscriberMethod> subscriberMethods = new ArrayList<>(findState.subscriberMethods);
+        findState.recycle();
+        synchronized (FIND_STATE_POOL) {
+            for (int i = 0; i < POOL_SIZE; i++) {
+                if (FIND_STATE_POOL[i] == null) {
+                    FIND_STATE_POOL[i] = findState;
+                    break;
+                }
+            }
+        }
+        return subscriberMethods;
+    }
+```
+##### subscribe(必须在同步代码块里调用)  
+```java
+private void subscribe(Object subscriber, SubscriberMethod subscriberMethod) {
+//订阅事件
+        Class<?> eventType = subscriberMethod.eventType;
+        //订阅者
+        Subscription newSubscription = new Subscription(subscriber, subscriberMethod);
+        //key:订阅的事件，value: 订阅这个事件的所有订阅者集合
+        CopyOnWriteArrayList<Subscription> subscriptions = subscriptionsByEventType.get(eventType);
+        if (subscriptions == null) {
+            subscriptions = new CopyOnWriteArrayList<>();
+            subscriptionsByEventType.put(eventType, subscriptions);
+        } else {
+        //已经添加，则抛出异常
+            if (subscriptions.contains(newSubscription)) {
+                throw new EventBusException("Subscriber " + subscriber.getClass() + " already registered to event "
+                        + eventType);
+            }
+        }
+//根据优先级添加订阅者，如果没有，则添加到集合末尾
+        int size = subscriptions.size();
+        //遍历订阅者集合，添加新订阅者
+        for (int i = 0; i <= size; i++) {
+            if (i == size || subscriberMethod.priority > subscriptions.get(i).subscriberMethod.priority) {
+//add(index, value): 向指定位置插入元素，index之后到元素向后移动，(index <= size,否则报错)
+                subscriptions.add(i, newSubscription);
+                break;
+            }
+        }
+//key:订阅者对象，value: 订阅者订阅的事件集合
+        List<Class<?>> subscribedEvents = typesBySubscriber.get(subscriber);
+        if (subscribedEvents == null) {
+            subscribedEvents = new ArrayList<>();
+            typesBySubscriber.put(subscriber, subscribedEvents);
+        }
+        //添加新事件
+        subscribedEvents.add(eventType);
+
+        if (subscriberMethod.sticky) {
+            if (eventInheritance) {
+                // Existing sticky events of all subclasses of eventType have to be considered.
+                // Note: Iterating over all events may be inefficient with lots of sticky events,
+                // thus data structure should be changed to allow a more efficient lookup
+                // (e.g. an additional map storing sub classes of super classes: Class -> List<Class>).
+                Set<Map.Entry<Class<?>, Object>> entries = stickyEvents.entrySet();
+                for (Map.Entry<Class<?>, Object> entry : entries) {
+                    Class<?> candidateEventType = entry.getKey();
+                    if (eventType.isAssignableFrom(candidateEventType)) {
+                        Object stickyEvent = entry.getValue();
+                        checkPostStickyEventToSubscription(newSubscription, stickyEvent);
+                    }
+                }
+            } else {
+                Object stickyEvent = stickyEvents.get(eventType);
+                checkPostStickyEventToSubscription(newSubscription, stickyEvent);
+            }
+        }
+    }
+```
+### EventBus.getDefault().post("hello world");  
+```java
+public void post(Object event) {
+        PostingThreadState postingState = currentPostingThreadState.get();
+        List<Object> eventQueue = postingState.eventQueue;
+  //队列中添加事件
+        eventQueue.add(event);
+				
+        if (!postingState.isPosting) {
+            postingState.isMainThread = isMainThread();
+            postingState.isPosting = true;
+            if (postingState.canceled) {
+                throw new EventBusException("Internal error. Abort state was not reset");
+            }
+            try {
+                while (!eventQueue.isEmpty()) {
+                  //发送单个事件
+                    postSingleEvent(eventQueue.remove(0), postingState);
+                }
+            } finally {
+                postingState.isPosting = false;
+                postingState.isMainThread = false;
+            }
+        }
+    }
+
+```
+#### currentPostingThreadState.get  
+```java
+private final ThreadLocal<PostingThreadState> currentPostingThreadState = new ThreadLocal<PostingThreadState>() {
+        @Override
+        protected PostingThreadState initialValue() {
+            return new PostingThreadState();
+        }
+    };
+```
+#### **ThreadLocal**
+##### ThreadLocal介绍
+`线程特有对象(TSO, Thread Specific Object)`: 一个实例只能被一个线程访问的对象
+`TSO`优点:  
+
+* 保障了对非线程安全对象的访问的线程安全
+- 避免了锁的开销
+- 减少对象的创建次数
+- 具有线程安全性  
+
+`ThreadLocal<T>`是线程访问其`TSO`的代理(proxy),即各个线程通过这个对象创建并访问各自的线程特有对象
+一个线程可以使用不同的ThreadLocal实例来创建并访问不同的`TSO`
+
+ThreadLocal被称为`线程局部变量(Thread-local Variable)`
+ThreadLocal常用方法
+
+| 方法 | 功能 |
+| --- | --- | --- |
+| public T get() | 获取与该线程局部变量关联的当前线程的线程特有对象 |  |
+| public void set(T value) | 设置该线程局部变量所对应的当前线程的TSO |  |
+| protected T initialValue() | 初始化，返回TSO(默认返回null，需重写) |  |
+| public void remove() |删除ThreadLocal与TSO的关联关系|
+
+ThreadLocal的`initialValue`默认返回值为null，需重写.
+当线程初次执行`ThreadLocal.get()`时，ThreadLocal.get()会调用`initialValue()`.  
+
+```java
+public class ThreadLocal {
+    protected T initialValue() {
+        return null;
+    }
+    public T get() {
+        Thread t = Thread.currentThread();
+        ThreadLocalMap map = getMap(t);
+        if (map != null) {
+            ThreadLocalMap.Entry e = map.getEntry(this);
+            if (e != null) {
+                @SuppressWarnings("unchecked")
+                T result = (T)e.value;
+                return result;
+            }
+        }
+        return setInitialValue();
+    }
+    ThreadLocalMap getMap(Thread t) {
+        return t.threadLocals;
+    }
+    private T setInitialValue() {
+        T value = initialValue();
+        Thread t = Thread.currentThread();
+        ThreadLocalMap map = getMap(t);
+        if (map != null)
+            map.set(this, value);
+        else
+            createMap(t, value);
+        return value;
+    }
+}
+```
+ThreadLocal可能导致内存泄漏，伪内存泄漏.
+
+> 内存泄漏(Memory Leak): 对象永远无法被垃圾回收导致其占用java虚拟机内存无法被释放. 持续的内存泄漏导致jvm内存减少，jvm内存溢出，甚至jvm宕机
+> 伪内存泄漏： 对象占用的内存空间可能会被回收，也可能无法被回收
+
+##### ThreadLocal 内部实现
+每个线程内部会维护一个类似HashMap的对象，称为`ThreadLocalMap`
+ThreadLocalMap内部有若干`Entry`(key/value结构), Entry的key为`ThreadLocal实例`,value为`TSO`.
+Entry对ThreadLocal对象的引用是一个`弱引用(weak Reference)`,不会阻止被引用的ThreadLocal实例被垃圾回收,当被回收后，Entry的key置为null.此时Entry为`无效条目(stale entry)`
+Entry对`TSO`是强引用，如果`无效条目`对其有可达强引用，无效条目会阻止引用的`TSO`被垃圾回收.
+鉴于此，当`ThreadLocalMap`中有新的key/value映射关系被创建时 (即新的Entry被加到ThreadLocalMap)，ThreadLocalMap会将`无效条目(stale entry)`清理掉（相当于复用无效条目）.
+
+*伪内存泄漏发生在新Entry添加到ThreadLocalMap之前*
+
+```mermaid
+graph LR
+A[Thread] -->|threadLocals|B[ThreadLocalMap] 
+	B --> |entries|C[Entry]
+		C -.->|key| D[ThreadLocal]
+		C -->|value| E[TSO]
+```
+
+在web应用中，为规避ThreadLocal可能导致的(伪)内存泄漏,使用`javax.servlet.Filter`接口实现类的`doFilter`方法中调用`ThreadLocal.remove()`
+
+##### **TSO**(线程特有对象)应用场景
+
+* 使用了非线程安全对象，又不引入锁
+* 使用了线程安全对象，希望避免使用的锁的开销及相关问题
+* 隐式参数传递
+* 特定于线程的单例模式
+
+#### PostingThreadState  
+
+```java
+final static class PostingThreadState {
+        final List<Object> eventQueue = new ArrayList<>();
+        boolean isPosting;
+        boolean isMainThread;
+        Subscription subscription;
+        Object event;
+        boolean canceled;
+    }
+```
+
+#### postSingleEvent  
+
+```java
+private void postSingleEvent(Object event, PostingThreadState postingState) throws Error {
+        Class<?> eventClass = event.getClass();
+        boolean subscriptionFound = false;
+  //是否触发订阅了该事件(eventClass)的父类,以及接口的类的响应方法
+        if (eventInheritance) {
+            List<Class<?>> eventTypes = lookupAllEventTypes(eventClass);
+            int countTypes = eventTypes.size();
+            for (int h = 0; h < countTypes; h++) {
+                Class<?> clazz = eventTypes.get(h);
+                subscriptionFound |= postSingleEventForEventType(event, postingState, clazz);
+            }
+        } else {
+            subscriptionFound = postSingleEventForEventType(event, postingState, eventClass);
+        }
+        if (!subscriptionFound) {
+            if (logNoSubscriberMessages) {
+                logger.log(Level.FINE, "No subscribers registered for event " + eventClass);
+            }
+            if (sendNoSubscriberEvent && eventClass != NoSubscriberEvent.class &&
+                    eventClass != SubscriberExceptionEvent.class) {
+                post(new NoSubscriberEvent(this, event));
+            }
+        }
+    }
+```
+
+##### postSingleEventForEventType  
+
+```java
+//根据事件类型eventType发送单个事件
+private boolean postSingleEventForEventType(Object event, PostingThreadState postingState, Class<?> eventClass) {
+  //subscriptionsByEventType(key:订阅的事件，value: 订阅这个事件的所有订阅者集合)
+        CopyOnWriteArrayList<Subscription> subscriptions;
+        synchronized (this) {
+          //获取订阅了这个事件的Subscription列表.
+            subscriptions = subscriptionsByEventType.get(eventClass);
+        }
+        if (subscriptions != null && !subscriptions.isEmpty()) {//遍历所有的订阅者
+            for (Subscription subscription : subscriptions) {
+                postingState.event = event;
+                postingState.subscription = subscription;
+              //是否被中断
+                boolean aborted = false;
+                try {
+                  //分发给订阅者
+                    postToSubscription(subscription, event, postingState.isMainThread);
+                    aborted = postingState.canceled;
+                } finally {
+                    postingState.event = null;
+                    postingState.subscription = null;
+                    postingState.canceled = false;
+                }
+                if (aborted) {
+                    break;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+```
+
+##### postToSubscription  
+
+```java
+//分发给订阅者
+private void postToSubscription(Subscription subscription, Object event, boolean isMainThread) {
+  //线程模式
+        switch (subscription.subscriberMethod.threadMode) {
+            case POSTING:
+                invokeSubscriber(subscription, event);
+                break;
+            case MAIN:
+                if (isMainThread) {
+                    invokeSubscriber(subscription, event);
+                } else {
+                    mainThreadPoster.enqueue(subscription, event);
+                }
+                break;
+            case MAIN_ORDERED:
+                if (mainThreadPoster != null) {
+                    mainThreadPoster.enqueue(subscription, event);
+                } else {
+                    // temporary: technically not correct as poster not decoupled from subscriber
+                    invokeSubscriber(subscription, event);
+                }
+                break;
+            case BACKGROUND:
+                if (isMainThread) {
+                    backgroundPoster.enqueue(subscription, event);
+                } else {
+                    invokeSubscriber(subscription, event);
+                }
+                break;
+            case ASYNC:
+                asyncPoster.enqueue(subscription, event);
+                break;
+            default:
+                throw new IllegalStateException("Unknown thread mode: " + subscription.subscriberMethod.threadMode);
+        }
+    }
+```
+
+#### invokeSubscriber
+
+```java
+void invokeSubscriber(Subscription subscription, Object event) {
+        try {
+            //使用反射，执行调用者类中的方法
+            subscription.subscriberMethod.method.invoke(subscription.subscriber, event);
+        } catch (InvocationTargetException e) {
+            handleSubscriberException(subscription, event, e.getCause());
+        } catch (IllegalAccessException e) {
+            throw new IllegalStateException("Unexpected exception", e);
+        }
+    }
+```
+##### ThreadMode.Main
+当事件需要在主线程执行时，首先判断当前线程是否为主线程，如果是，直接调用`invokeSubscriber()`函数；如果不是，添加到主线程事件处理队列中。主线程事件处理的类是`HandlerPoster`
+```java
+public class HandlerPoster extends Handler implements Poster {
+//event队列
+    private final PendingPostQueue queue;
+    //内部发送消息时间间隔 (thinking: 此变量的意义)
+    private final int maxMillisInsideHandleMessage;
+    private final EventBus eventBus;
+    private boolean handlerActive;
+    
+    //在eventbus创建时初始化
+    protected HandlerPoster(EventBus eventBus, Looper looper, int maxMillisInsideHandleMessage) {
+        super(looper);
+        this.eventBus = eventBus;
+        this.maxMillisInsideHandleMessage = maxMillisInsideHandleMessage;
+        queue = new PendingPostQueue();
+    }
+    /** 继承自poster
+      *向队尾添加事件，并发送
+      */
+    public void enqueue(Subscription subscription, Object event) {
+        PendingPost pendingPost = PendingPost.obtainPendingPost(subscription, event);
+        //同步锁
+        synchronized (this) {
+            queue.enqueue(pendingPost);
+            //确保同一时间只发送一条消息
+            if (!handlerActive) {
+                handlerActive = true;
+                if (!sendMessage(obtainMessage())) {
+                    throw new EventBusException("Could not send handler message");
+                }
+            }
+        }
+    }
+    @Override
+    public void handleMessage(Message msg) {
+        boolean rescheduled = false;
+        try {
+            long started = SystemClock.uptimeMillis();
+            //循环取任务并发送
+            while (true) {
+                PendingPost pendingPost = queue.poll();
+                if (pendingPost == null) {
+                    synchronized (this) {
+                        // Check again, this time in synchronized
+                        pendingPost = queue.poll();
+                        if (pendingPost == null) {
+                            handlerActive = false;
+                            return;
+                        }
+                    }
+                }
+                //发送事件
+                eventBus.invokeSubscriber(pendingPost);
+                long timeInMethod = SystemClock.uptimeMillis() - started;
+                //超过时间间隔，再次sendMessage
+                if (timeInMethod >= maxMillisInsideHandleMessage) {
+                    if (!sendMessage(obtainMessage())) {
+                        throw new EventBusException("Could not send handler message");
+                    }
+                    rescheduled = true;
+                    return;
+                }
+            }
+        } finally {
+            handlerActive = rescheduled;
+        }
+    }
+}
+```
+```java
+//EventBus.java
+void invokeSubscriber(PendingPost pendingPost) {
+        Object event = pendingPost.event;
+        Subscription subscription = pendingPost.subscription;
+        //释放已执行的事件
+        PendingPost.releasePendingPost(pendingPost);
+        //判断是否解除订阅关系[见下面unsubscribeByEventType]
+        if (subscription.active) {
+            invokeSubscriber(subscription, event);
+        }
+    }
+```
+简而言之，主线程的事件就是通过Handler处理，内部维护一个队列`PendingPostQueue`，`PendingPostQueue`内部存储的是`PendingPost`
+
+##### 事件任务 - PendingPost 
+```java
+final class PendingPost {
+//事件缓存池
+    private final static List<PendingPost> pendingPostPool = new ArrayList<PendingPost>();
+
+    Object event;
+    Subscription subscription;
+    PendingPost next;
+
+    private PendingPost(Object event, Subscription subscription) {
+        this.event = event;
+        this.subscription = subscription;
+    }
+//创建PendingPost
+    static PendingPost obtainPendingPost(Subscription subscription, Object event) {
+        synchronized (pendingPostPool) {
+            int size = pendingPostPool.size();
+            //如果缓存中有则从中取出赋值，避免多次创建
+            if (size > 0) {
+                PendingPost pendingPost = pendingPostPool.remove(size - 1);
+                pendingPost.event = event;
+                pendingPost.subscription = subscription;
+                pendingPost.next = null;
+                return pendingPost;
+            }
+        }
+        return new PendingPost(event, subscription);
+    }
+//已执行的任务置空，并用缓存池缓存
+    static void releasePendingPost(PendingPost pendingPost) {
+        pendingPost.event = null;
+        pendingPost.subscription = null;
+        pendingPost.next = null;
+        synchronized (pendingPostPool) {
+            // Don't let the pool grow indefinitely
+            if (pendingPostPool.size() < 10000) {
+                pendingPostPool.add(pendingPost);
+            }
+        }
+    }
+}
+```
+##### 任务队列 - PendingPostQueue
+```java
+final class PendingPostQueue { //FIFO
+    private PendingPost head;//队头
+    private PendingPost tail;//队尾
+    //入队，需要同步锁
+    synchronized void enqueue(PendingPost pendingPost) {
+        if (pendingPost == null) {
+            throw new NullPointerException("null cannot be enqueued");
+        }
+        if (tail != null) {
+            tail.next = pendingPost;
+            tail = pendingPost;
+        } else if (head == null) {
+            head = tail = pendingPost;
+        } else {
+            throw new IllegalStateException("Head present, but no tail");
+        }
+        notifyAll();
+    }
+//出队
+    synchronized PendingPost poll() {
+        PendingPost pendingPost = head;
+        if (head != null) {
+            head = head.next;
+            if (head == null) {
+                tail = null;
+            }
+        }
+        return pendingPost;
+    }
+
+    synchronized PendingPost poll(int maxMillisToWait) throws InterruptedException {
+        if (head == null) {
+            wait(maxMillisToWait);
+        }
+        return poll();
+    }
+}
+```
+##### ThreadMode.ASYNC
+```java
+//没有同步锁
+class AsyncPoster implements Runnable, Poster {
+
+    private final PendingPostQueue queue;
+    private final EventBus eventBus;
+
+    AsyncPoster(EventBus eventBus) {
+        this.eventBus = eventBus;
+        queue = new PendingPostQueue();
+    }
+
+    public void enqueue(Subscription subscription, Object event) {
+        PendingPost pendingPost = PendingPost.obtainPendingPost(subscription, event);
+        queue.enqueue(pendingPost);
+        /**
+          *ExecutorService在EventBusBuilder中创建
+          */
+        eventBus.getExecutorService().execute(this);
+    }
+
+    @Override
+    public void run() {
+        PendingPost pendingPost = queue.poll();
+        if(pendingPost == null) {
+            throw new IllegalStateException("No pending post available");
+        }
+        eventBus.invokeSubscriber(pendingPost);
+    }
+}
+```
+```java
+//EventBusBuilder.java
+private final static ExecutorService DEFAULT_EXECUTOR_SERVICE = Executors.newCachedThreadPool();
+
+newCachedThreadPool(): 适用于执行大量耗时较短且提交比较频繁的任务.
+如果任务执行耗时较长，可能导致线程池中的工作者线程无限制的增加，从而导致过多的上下文切换，最后系统变慢，卡顿.
+
+该方法的返回值等同于：
+new ThreadPoolExecutor(0, Integer.MAX_VALUE, 60L, TimeUnit.SECONDS, new SynchronousQueue<Runnable>());
+即核心线程池大小为0，最大线程池大小max_value,工作者线程允许的最大空闲时间为60秒，内部以SynchronousQueue为工作队列的线程池.
+```
+这里为什么用Executor，而不是直接使用Thread.start()?[^a]
+
+##### ThreadMode.BACKGROUND
+后台线程与异步线程同样实现了`Runnable`接口, 区别是后台线程在入队出队时使用了同步锁，而异步线程没有
+
+#### 强引用，软引用，弱引用
+
+| 引用类型                | 被垃圾回收时间 | 用途           | 生存时间          |
+| --- | --- | --- | --- |
+| 强引用(StrongReference) | nerver         | 对象的一般状态 | jvm停止运行时终止 |
+| 软引用(SoftReference) | 在内存不足时 | 对象缓存 | 内存不足时终止 |
+| 弱引用(weakReference) | 在垃圾回收时 | 对象缓存 | gc运行后终止 |
+
+### EventBus.getDefault().unregister(this)
+
+解除注册  
+
+```java
+public synchronized void unregister(Object subscriber) {
+  /**
+  	*typesBySubscriber  -> Map<Object, List<Class<?>>>
+  	* (key:订阅者对象，value: 订阅者订阅的事件集合)
+  	*/
+        List<Class<?>> subscribedTypes = typesBySubscriber.get(subscriber);
+        if (subscribedTypes != null) {
+            for (Class<?> eventType : subscribedTypes) {
+                unsubscribeByEventType(subscriber, eventType);
+            }
+            typesBySubscriber.remove(subscriber);
+        } else {
+            logger.log(Level.WARNING, "Subscriber to unregister was not registered before: " + subscriber.getClass());
+        }
+    }
+```
+
+#### unsubscribeByEventType 解除事件/订阅者关系
+
+```java
+private void unsubscribeByEventType(Object subscriber, Class<?> eventType) {
+  /**subscriptionsByEventType -> Map<Class<?>, CopyOnWriteArrayList<Subscription>>
+  *  key:订阅的事件，value: 订阅这个事件的所有订阅者集合
+  */
+        List<Subscription> subscriptions = subscriptionsByEventType.get(eventType);
+        if (subscriptions != null) {
+            int size = subscriptions.size();
+            for (int i = 0; i < size; i++) {
+                Subscription subscription = subscriptions.get(i);
+              //是要移除的订阅者
+                if (subscription.subscriber == subscriber) {
+                    subscription.active = false;
+                    subscriptions.remove(i);
+                    i--;
+                    size--;
+                }
+            }
+        }
+    }
+```
+
+以上，简单的eventbus流程结束。  
+
+`Map<Class<?>, CopyOnWriteArrayList<Subscription>>   subscriptionsByEventType`和`Map<Object, List<Class<?>>>  typesBySubscriber`很重要
+
+事件(eventType)和订阅者(subscriber)是多对多的关系, `subscriptionsByEventType`维护`事件/订阅者集合`,  
+`typesBySubscriber`维护`订阅者/订阅者订阅的事件集合`;
+
+`SubscriberMethod`是订阅者方法model, 包含有订阅者方法，线程，事件，优先级，是否粘性；
+
+`Subscription`包含了订阅者(subscriber)，`SubscriberMethod`
+
+
+[^a]: Thread与Executor区别
+    Thread和Executor都是Java里用来并发执行一些code，通过继承java.lang.Thread类或者是实现java.lang.Runnable接口来实现；而Executor是一个接口，也提供了并发执行的能力，但是是通过线程池的形式，这对于大型Java应用来说更加适用.
+    区别如下: 
+    * Thread是一个类，Executor是一个接口；
+    * Executor是并发计算的一个抽象，它允许代码以托管的方式运行，而Thread则是并发运行代码的一个具体实现；
+    * Executor把任务本身和执行过程解耦，这在Thread是紧密结合在一起的；
+    * Executor提供了一个executor方法接受一个Runnable对象，而Thread是在构造方法里传入一个Runnable对象，这里会造成一个问题，Executor可以执行不同类型的Runnable对象，而Thread不行，这是一个非常大的区别；
