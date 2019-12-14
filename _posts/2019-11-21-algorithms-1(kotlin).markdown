@@ -3,7 +3,7 @@ layout: post
 title:  "算法之排序(kotlin实现)"
 date:   2019-11-21 17:15:02 +0800
 categories: jekyll update
-tags: [algorithms,kotlin]
+tags: algorithms kotlin
 ---
 
 ```kotlin

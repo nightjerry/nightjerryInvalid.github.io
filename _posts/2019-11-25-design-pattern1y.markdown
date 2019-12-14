@@ -3,7 +3,7 @@ layout: post
 title:  "设计模式_创建型模式"
 date:   2019-11-25 16:39:02 +0800
 categories: jekyll update
-tags: [java, design pattern]
+tags: java design_pattern
 ---
 
 #创建型模式

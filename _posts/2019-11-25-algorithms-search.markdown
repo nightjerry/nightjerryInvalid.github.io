@@ -3,7 +3,7 @@ layout: post
 title:  "<算法>_查找"
 date:   2019-11-25 09:28:02 +0800
 categories: jekyll update
-tags: [algorithms, java]
+tags: algorithms java
 ---
 
 ##算法

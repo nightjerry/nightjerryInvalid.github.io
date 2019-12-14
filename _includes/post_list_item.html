@@ -1,0 +1,14 @@
+<li>
+    {% assign date_format = site.minima.date_format | default: "%b %-d, %Y" %}
+    <span class="post-meta">{{ include.post_item.date | date: date_format }}</span>
+    <h2>
+        <a class="post-link" href="{{ include.post_item.url | relative_url }}">{{ include.post_item.title | escape }}</a>
+    </h2>
+    {% if include.post_item.tags.size > 0 %}
+        <span class="post-meta">TAGS:
+        {% for tag in include.post_item.tags %}
+            <a href="{% include tag_link.html tag_name = tag %}">{{ tag | escape }}</a>
+        {% endfor %}
+        </span>
+    {% endif %}
+</li>

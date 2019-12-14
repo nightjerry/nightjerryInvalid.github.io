@@ -1,0 +1,19 @@
+{% assign last_year = "" %}
+{% assign last_count = 0 %}
+<div class="side-bar-block">
+<span class="post-meta">ARCHIVE:</span>
+<ul>
+{% for post in site.posts %}
+    {% assign post_year = post.date | date: "%Y" %}
+    {% if post_year != last_year %}
+        {% if last_count > 0 %}<li><a href="{{ last_year | prepend: 'archive/' | append : '/' | relative_url }}">{{ last_year }}年归档({{ last_count }})</a></li>{% endif %}
+        {% assign last_year = post_year %}
+        {% assign last_count = 1 %}
+    {% else %}
+        {% assign last_count = last_count | plus: 1 %}
+    {% endif %}
+{% endfor %}
+{% if last_count > 0 %}<li><a href="{{ last_year | prepend: 'archive/' | append : '/' | relative_url }}">{{ last_year }}年归档({{ last_count }})</a></li>{% endif %}
+</ul>
+<div class="side-bar-delim"></div>
+</div>

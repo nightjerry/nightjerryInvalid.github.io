@@ -6,7 +6,7 @@ date:   2019-12-12 15:38:00 +0800
 author: jerry
 header-img: "img/avatar.jpg"
 categories: jekyll update
-tags: [java android]
+tags: java android
 ---
 
 # EventBus源码分析

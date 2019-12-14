@@ -1,0 +1,14 @@
+{% if site.tags.size > 0 %}
+<div class="side-bar-block">
+    <span class="post-meta">TAGS:</span>
+    <ul>
+    {% for tag in site.tags %}
+    <li>
+        {% assign tn_tmp = tag | first %}
+        <a href="{% include tag_link.html tag_name = tn_tmp %}">{{ tag[0] | escape }}({{ tag[1].size }})</a>
+    </li>
+    {% endfor %}
+    </ul>
+    <div class="side-bar-delim"></div>
+</div>
+{% endif %}

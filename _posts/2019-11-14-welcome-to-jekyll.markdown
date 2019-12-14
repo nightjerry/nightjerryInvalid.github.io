@@ -1,9 +1,13 @@
 ---
 layout: post
 title:  "Welcome to Jekyll!"
+subtitle:   "Hello World, Hello Blog"
 date:   2019-11-14 15:56:02 +0800
+author: jerry
+header-img: "img/avatar.jpg"
 categories: jekyll update
-tags: demo
+tags: 
+    - demo
 ---
 
 this is excerpt
