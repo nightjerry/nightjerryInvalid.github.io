@@ -1,0 +1,476 @@
+---
+layout: post
+title:  "Binder机制"
+subtitle:   "binder及进程间通信的原理"
+date:   2019-12-20 09:28:00 +0800
+author: jerry
+header-img: "img/avatar.jpg"
+categories: android
+tags: android java
+---
+
+[TOC]  
+
+`IPC`是Inter-Processs Communication的缩写，意为进程间通信.
+android启动多进程方式: 
+在AndroidManifest.xml中给Activity/Service/ContentProvider指定**android:process**属性
+```java
+<activity
+    android:name="com.jerry.MainActivity"
+    >
+    <intent-filter>
+        <action android:name="android.intent.action.MAIN"/>
+    <category android:name="android.intent.category.LAUNCHER"/>
+    </intent-filter>
+</activity>
+<activity
+    android:name="com.jerry.SecondActivity"
+    android:process=":remote"
+    />
+<activity
+    android:name="com.jerry.ThridActivity"
+    android:process="com.jerry.remote"
+    />
+```
+以上增加了两个进程，如果包名为com.jerry，当启动SecondActivity时，系统创建一个单独的进程，进程名称为"com.jerry:remote";当启动ThridActivity时，进程名为com.jerry.remote
+在命令行通过`adb shell ps | grep 包名`查看进程信息
+多进程会引入的问题：
+* 静态成员和单例模式完全失效；
+* 线程同步机制失效；
+* SharedPreferences 的可靠性下降；
+* Application会多次创建;
+
+## Serializable
+`serialVersionUID`的作用: 序列化后的数据中的serialVersionUID只有和当前类的serialVersionUID相同才能正常被反序列化.
+如果不手动指定serialVersionUID，反序列化时当前类有改动(增加或删除变量),系统会重新计算当前类的hash值并把它赋值给serialVersionUID，此时serialVersionUID与序列化数据中的serialVersionUID不同，导致反序列化失败.
+## Parcelable接口
+一种序列化方式，对象实现此接口，可以通过Intent和Binder传递
+```java
+public class User implements Parcelable {
+    public int userId;
+    public String userName;
+    public boolean isMale;
+    public Book book;
+    public User() {}
+    public User(int userId, String userName, boolean isMale) {
+        this.userId = userId;
+        this.userName = userName;
+        this.isMale = isMale;
+    }
+
+    public int describeContents() {
+        return 0;
+    }
+
+    public void writeToParcel(Parcel out, int flags) {
+        out.writeInt(userId);
+        out.writeString(userName);
+        out.writeInt(isMale ? 1 : 0);
+        out.writeParcelable(book, 0);
+    }
+
+    public static final Parcelable.Creator<User> CREATOR = new Parcelable.Creator<User>() {
+        public User createFromParcel(Parcel in) {
+            return new User(in);
+        }
+
+        public User[] newArray(int size) {
+            return new User[size];
+        }
+    };
+
+    private User(Parcel in) {
+        userId = in.readInt();
+        userName = in.readString();
+        isMale = in.readInt() == 1;
+book=in.readParcelable(Thread.currentThread().getContextClassLoader());
+    }
+}
+```
+`Parcel`内部包装了可序列化的数据，可以在Binder传递；
+在**User(Parcel in)**中，book是另一个可序列化对象，所以它的反序列化过程需要传递当前线程的上下文类加载器，否则报无法找到类的错误
+
+| 方法 | 功能 |  
+| --- | --- |  
+| createFromParcel(Parcel in) | 从序列化后的对象中创建原始对象 |  |
+| newArray(int size) | 创建指定长度的原始对象数组 |  |
+| User(Parcel in) | 从序列化后的对象中创建原始对象 |  |
+| writeToParcel(Parcel out, int flags) | 序列化; flag有两种值：0或1； 为1时表示当前对象需要作为返回值返回，不能立即释放资源；一般用0 |   |
+| describeContents | 返回当前对象的描述内容；如果含有文件描述符，返回1；否则0；一般返回0； 
+ 
+Serializable和Parcelable对比：
+Serializable使用简单，但序列化和反序列化需要IO操作，开销很大；
+Parcelable高效，使用复杂；
+
+## Binder
+Binder是android的一种跨进程通信方式; 
+从android应用层角度看，Binder是客户端和服务端进行通信的媒介；
+Binder主要用在Service中，如AIDL， Messenger; 
+所有可以在Binder中传输的接口都需要继承`IInterface`接口
+
+```java
+//Book.java
+package com.jerry.aidldemo;
+
+import android.os.Parcel;
+import android.os.Parcelable;
+
+public class Book implements Parcelable {
+    public int price;
+    public String name;
+
+    public Book(String name, int price){
+        this.price = price;
+        this.name = name;
+    }
+
+    protected Book(Parcel in) {
+        price = in.readInt();
+        name = in.readString();
+    }
+
+    @Override
+    public void writeToParcel(Parcel dest, int flags) {
+        dest.writeInt(price);
+        dest.writeString(name);
+    }
+
+    @Override
+    public int describeContents() {
+        return 0;
+    }
+
+    public static final Creator<Book> CREATOR = new Creator<Book>() {
+        @Override
+        public Book createFromParcel(Parcel in) {
+            return new Book(in);
+        }
+
+        @Override
+        public Book[] newArray(int size) {
+            return new Book[size];
+        }
+    };
+}
+```
+```java
+//Book.aidl
+package com.jerry.aidldemo; 
+parcelable Book;
+```
+```java
+// IBookManager.aidl
+package com.jerry.aidldemo;
+
+// Declare any non-default types here with import statements
+import com.jerry.aidldemo.Book;//必须import
+
+interface IBookManager {
+    /**
+     * Demonstrates some basic types that you can use as parameters
+     * and return values in AIDL.
+     */
+    void basicTypes(int anInt, long aLong, boolean aBoolean, float aFloat,
+            double aDouble, String aString);
+    void addBook(in Book book);
+    List<Book> getBooks();
+}
+```
+> 注意：当aidl文件中引入自定义类时，需要手动创建该类同名的aidl文件，并在引入自定义类的aidl文件中`import`自定义类的全路径名
+
+IBookManager.aidl在编译器android studio下生成的java文件如下,根据生成的Binder类分析Binder的工作原理
+```java
+//IBookManager.java
+/*
+ * This file is auto-generated.  DO NOT MODIFY.
+ */
+package com.jerry.aidldemo;
+//所有可以在Binder中传输的接口要继承IInterface接口
+public interface IBookManager extends android.os.IInterface
+{
+  /** Default implementation for IBookManager. */
+  public static class Default implements com.jerry.aidldemo.IBookManager
+  {
+    /**
+         * Demonstrates some basic types that you can use as parameters
+         * and return values in AIDL.
+         */
+    @Override public void basicTypes(int anInt, long aLong, boolean aBoolean, float aFloat, double aDouble, java.lang.String aString) throws android.os.RemoteException
+    {
+    }
+    @Override public void addBook(com.jerry.aidldemo.Book book) throws android.os.RemoteException
+    {
+    }
+    @Override public java.util.List<com.jerry.aidldemo.Book> getBooks() throws android.os.RemoteException
+    {
+      return null;
+    }
+    @Override
+    public android.os.IBinder asBinder() {
+      return null;
+    }
+  }
+  /** Local-side IPC implementation stub class. */
+  public static abstract class Stub extends android.os.Binder implements com.jerry.aidldemo.IBookManager
+  {
+    private static final java.lang.String DESCRIPTOR = "com.jerry.aidldemo.IBookManager";
+    /** Construct the stub at attach it to the interface. */
+    public Stub()
+    {
+      this.attachInterface(this, DESCRIPTOR);
+    }
+    /**
+     * Cast an IBinder object into an com.jerry.aidldemo.IBookManager interface,
+     * generating a proxy if needed.
+     */
+    public static com.jerry.aidldemo.IBookManager asInterface(android.os.IBinder obj)
+    {
+      if ((obj==null)) {
+        return null;
+      }
+      android.os.IInterface iin = obj.queryLocalInterface(DESCRIPTOR);
+      if (((iin!=null)&&(iin instanceof com.jerry.aidldemo.IBookManager))) {
+        return ((com.jerry.aidldemo.IBookManager)iin);
+      }
+      return new com.jerry.aidldemo.IBookManager.Stub.Proxy(obj);
+    }
+    @Override public android.os.IBinder asBinder()
+    {
+      return this;
+    }
+    @Override public boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply, int flags) throws android.os.RemoteException
+    {
+      java.lang.String descriptor = DESCRIPTOR;
+      switch (code)
+      {
+        case INTERFACE_TRANSACTION:
+        {
+          reply.writeString(descriptor);
+          return true;
+        }
+        case TRANSACTION_basicTypes:
+        {
+          data.enforceInterface(descriptor);
+          int _arg0;
+          _arg0 = data.readInt();
+          long _arg1;
+          _arg1 = data.readLong();
+          boolean _arg2;
+          _arg2 = (0!=data.readInt());
+          float _arg3;
+          _arg3 = data.readFloat();
+          double _arg4;
+          _arg4 = data.readDouble();
+          java.lang.String _arg5;
+          _arg5 = data.readString();
+          this.basicTypes(_arg0, _arg1, _arg2, _arg3, _arg4, _arg5);
+          reply.writeNoException();
+          return true;
+        }
+        case TRANSACTION_addBook:
+        {
+          data.enforceInterface(descriptor);
+          com.jerry.aidldemo.Book _arg0;
+          if ((0!=data.readInt())) {
+            _arg0 = com.jerry.aidldemo.Book.CREATOR.createFromParcel(data);
+          }
+          else {
+            _arg0 = null;
+          }
+          this.addBook(_arg0);
+          reply.writeNoException();
+          return true;
+        }
+        case TRANSACTION_getBooks:
+        {
+          data.enforceInterface(descriptor);
+          java.util.List<com.jerry.aidldemo.Book> _result = this.getBooks();
+          reply.writeNoException();
+          reply.writeTypedList(_result);
+          return true;
+        }
+        default:
+        {
+          return super.onTransact(code, data, reply, flags);
+        }
+      }
+    }
+    private static class Proxy implements com.jerry.aidldemo.IBookManager
+    {
+      private android.os.IBinder mRemote;
+      Proxy(android.os.IBinder remote)
+      {
+        mRemote = remote;
+      }
+      @Override public android.os.IBinder asBinder()
+      {
+        return mRemote;
+      }
+      public java.lang.String getInterfaceDescriptor()
+      {
+        return DESCRIPTOR;
+      }
+      /**
+           * Demonstrates some basic types that you can use as parameters
+           * and return values in AIDL.
+           */
+      @Override public void basicTypes(int anInt, long aLong, boolean aBoolean, float aFloat, double aDouble, java.lang.String aString) throws android.os.RemoteException
+      {
+        android.os.Parcel _data = android.os.Parcel.obtain();
+        android.os.Parcel _reply = android.os.Parcel.obtain();
+        try {
+          _data.writeInterfaceToken(DESCRIPTOR);
+          _data.writeInt(anInt);
+          _data.writeLong(aLong);
+          _data.writeInt(((aBoolean)?(1):(0)));
+          _data.writeFloat(aFloat);
+          _data.writeDouble(aDouble);
+          _data.writeString(aString);
+          boolean _status = mRemote.transact(Stub.TRANSACTION_basicTypes, _data, _reply, 0);
+          if (!_status && getDefaultImpl() != null) {
+            getDefaultImpl().basicTypes(anInt, aLong, aBoolean, aFloat, aDouble, aString);
+            return;
+          }
+          _reply.readException();
+        }
+        finally {
+          _reply.recycle();
+          _data.recycle();
+        }
+      }
+      @Override public void addBook(com.jerry.aidldemo.Book book) throws android.os.RemoteException
+      {
+        android.os.Parcel _data = android.os.Parcel.obtain();
+        android.os.Parcel _reply = android.os.Parcel.obtain();
+        try {
+          _data.writeInterfaceToken(DESCRIPTOR);
+          if ((book!=null)) {
+            _data.writeInt(1);
+            book.writeToParcel(_data, 0);
+          }
+          else {
+            _data.writeInt(0);
+          }
+          boolean _status = mRemote.transact(Stub.TRANSACTION_addBook, _data, _reply, 0);
+          if (!_status && getDefaultImpl() != null) {
+            getDefaultImpl().addBook(book);
+            return;
+          }
+          _reply.readException();
+        }
+        finally {
+          _reply.recycle();
+          _data.recycle();
+        }
+      }
+      @Override public java.util.List<com.jerry.aidldemo.Book> getBooks() throws android.os.RemoteException
+      {
+        android.os.Parcel _data = android.os.Parcel.obtain();
+        android.os.Parcel _reply = android.os.Parcel.obtain();
+        java.util.List<com.jerry.aidldemo.Book> _result;
+        try {
+          _data.writeInterfaceToken(DESCRIPTOR);
+          boolean _status = mRemote.transact(Stub.TRANSACTION_getBooks, _data, _reply, 0);
+          if (!_status && getDefaultImpl() != null) {
+            return getDefaultImpl().getBooks();
+          }
+          _reply.readException();
+          _result = _reply.createTypedArrayList(com.jerry.aidldemo.Book.CREATOR);
+        }
+        finally {
+          _reply.recycle();
+          _data.recycle();
+        }
+        return _result;
+      }
+      public static com.jerry.aidldemo.IBookManager sDefaultImpl;
+    }
+    static final int TRANSACTION_basicTypes = (android.os.IBinder.FIRST_CALL_TRANSACTION + 0);
+    static final int TRANSACTION_addBook = (android.os.IBinder.FIRST_CALL_TRANSACTION + 1);
+    static final int TRANSACTION_getBooks = (android.os.IBinder.FIRST_CALL_TRANSACTION + 2);
+    public static boolean setDefaultImpl(com.jerry.aidldemo.IBookManager impl) {
+      if (Stub.Proxy.sDefaultImpl == null && impl != null) {
+        Stub.Proxy.sDefaultImpl = impl;
+        return true;
+      }
+      return false;
+    }
+    public static com.jerry.aidldemo.IBookManager getDefaultImpl() {
+      return Stub.Proxy.sDefaultImpl;
+    }
+  }
+  /**
+       * Demonstrates some basic types that you can use as parameters
+       * and return values in AIDL.
+       */
+  public void basicTypes(int anInt, long aLong, boolean aBoolean, float aFloat, double aDouble, java.lang.String aString) throws android.os.RemoteException;
+  public void addBook(com.jerry.aidldemo.Book book) throws android.os.RemoteException;
+  public java.util.List<com.jerry.aidldemo.Book> getBooks() throws android.os.RemoteException;
+}
+```
+### 分析：
+IBookManager接口的核心实现是`Stub`和`Stub.Proxy`,接下来分析这两个类
+#### Stub
+`Stub`继承自Binder，实现了IBookManager接口
+`DESCRIPTOR`: Binder唯一标识，一般用当前Binder类名表示
+```java
+private static final java.lang.String DESCRIPTOR = "com.jerry.aidldemo.IBookManager";
+```
+`asInterface(android.os.IBinder obj)`: 用于将服务端的Binder对象转换成客户端所需的AIDL接口类型的对象; 这种转换过程是区分进程的，如果客户端与服务端位于**同一进程**，那么此方法返回的就是服务端的`Stub`对象本身; **跨进程**时返回系统封装后的`Stub.Proxy`对象
+`asBinder`: 返回Binder对象
+`onTransact`: 该方法运行在**服务端**的Binder线程池中，当客户端发起跨进程请求时，远程请求会通过系统底层封装后交由此方法处理.
+```java
+public boolean onTransact(int code, android.os.Parcel data, android.os.Parcel reply, int  flags)
+参数说明：
+code : 客户端请求的目标方法
+data : 封装了目标方法所需的参数
+reply: 当目标方法执行完毕后，向reply中写入返回值(如果目标方法有返回值)
+```
+如果`onTransact`返回false，那么客户端的请求会失败；返回true，则客户端请求成功；可以依此做权限验证
+`Proxy#getBooks, Proxy#addBook`: 该方法运行在**客户端**, 内部实现流程：  
+1. 创建输入型Parcel对象`_data`,输出型Parcel对象`_reply`,返回值对象List(如果有返回值的话）
+2. 如果有参数的话，向`_data`中写入参数信息
+3. 调用`transact`方法发起`RPC(远程过程调用)`请求，同时**当前线程挂起**
+4. 服务端的`onTransact`被调用，直到`RPC`过程返回，此时**当前线程恢复执行**; 如果函数有返回值，则从`_reply`中取出RPC过程的返回结果，最后返回`_reply`中的数据
+
+> 1. 客户端发起跨进程请求时，当前线程会被挂起直至服务端进程返回结果，如果远程方法是耗时的，则不能在UI线程中发起该请求
+> 2. 服务端的Binder方法运行在Binder的线程池中，所以Binder方法采用同步方式实现，忽略耗时与否.
+>
+> > Binder方法是由开发在Service中实现的. 
+
+执行流程如下图:
+```mermaid
+graph TB
+    A[Client] -- 1.远程请求\ 挂起Client -->  B[Binder]
+    B -- 2.写入参数 --> C(_data)
+    C -- 3.transact --> D[Service]
+    D -- 4.onTransact --> E((线程池))
+    E -- 5.写入结果 --> F(_reply)
+    F --> B
+    B -- 6.返回数据\ 唤醒Client-->A
+```
+
+AIDL文件不是实现Binder的必需品，可以手动方式实现Binder，在下一章博客会详细记录. AIDL文件方式是系统提供的较方便的方式。
+
+### binder异常停止及重连
+如果服务端进程由于某种原因异常停止，这时客户端到服务端的Binder链接断裂，称Binder死亡. 会导致客户端的远程调用失败；
+Binder提供了两个配对的方法`linkToDeath`,`unlinkToDeath`;
+通过linkToDeath可以设置Binder的断开代理，当Binder断开链接时，客户端收到回调，可以重新发起连接请求；
+
+```java
+//创建断开代理
+private IBinder.DeathRecipient mDeathRecipient = new IBinder.DeathRecipient() {
+    @Override
+    public void binderDied() {
+        if (mBookManager == null)
+            return ;
+        mBookManager.asBinder().unlinkToDeath(mDeathRecipient, 0);
+        mBookManager = null;
+        //TODO reconnect service 
+        bindservice ...
+    }
+}
+```  
+
+
+参考:任玉刚《Android开发艺术探索》第二章
