@@ -3,7 +3,7 @@ layout: post
 title:  "kotlin1 函数&变量"
 date:   2019-11-14 16:48:02 +0800
 categories: jekyll update
-tags: demo
+tags: kotlin
 ---
 
 ## 1. 函数和变量
