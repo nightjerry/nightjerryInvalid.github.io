@@ -1,0 +1,408 @@
+---
+layout: post
+title:  "Binder机制之messenger，aidl"
+subtitle:   "Binder机制之messenger，aidl"
+date:   2019-12-24 10:55:00 +0800
+author: jerry
+header-img: "img/avatar.jpg"
+categories: jekyll update
+tags: android 
+---
+
+[TOC]
+
+## Messenger
+轻量级的IPC方式，底层实现是aidl
+### 通信范例(client sendMsg to server)
+步骤：
+* 服务端进程；实现逻辑如下
+
+```java
+    //1.创建service
+    public class MessengerService extends Services {
+    //2.创建处理消息的handler
+        private static class MessengerHandler extends Handler {
+            @Override
+            public void handleMessage(Message msg) {
+            //处理消息
+                switch(msg.what) {
+                    case MSG_FROM_CLIENT:
+                       Log.e("tag","receive msg:"=msg.getData().getString("msg")); 
+                    break;
+                    default:
+                    
+                    break;
+                }
+            }
+        }
+        //3.根据Handler创建Messenger
+        private final Messenger mMessenger = new Messenger(new MessengerHandler());
+        //4.返回IBinder
+        @Override
+        public IBinder onBind(Intent intent) {
+            return mMessenger.getBinder();
+        }
+    }
+```
+```java
+    //5.注册为独立进程的service
+    <service 
+        android:name="com.xxx.MessengerHander"
+        android:process=":remote"/> 
+```
+    
+* 客户端进程
+
+```java
+    public class MessengerActivity and Activity {
+        private Messenger mService;
+        
+        private ServiceConnection mConn = new ServiceConnection(){
+            public void onServiceConnected(ComponentName className, IBinder service) {
+            //2.创建客户端Messenger
+                mService = new Messenger(service);
+            //3.创建通信消息
+            //3.1创建Message
+                Message msg = Message.obtain(null,  MSG_FROM_CLIENT);
+                //3.2.创建通信消息
+                Bundler data = new Bundler();
+                data.putString("msg", "hello, i'm client");
+                //3.3 使用Message封装数据
+                msg.setData(data);
+                
+                try{
+            //4.发送消息给service
+                    mService.send(msg);
+                }catch(RemoteException e){
+                    e.printStackTrace();
+                }
+            }
+            public void onServiceDisconnected(ComponentName className){}
+        };
+        
+        protected void onCreate(Bundle savedInstancesState) {
+            super.onCreate(saveInstanceState);
+            setContentView(R.layout.main);
+            //1.绑定service
+            Intent intent = new Intent(this, MessengerService.class);
+            bindService(intent, mConn, Context.BIND_AUTO_CREATE);
+        }
+        protected void onDestroy() {
+            unbindService(mConn);
+            super.onDestroy();
+        }
+    }
+```  
+
+通过上例，在Messenger中进行数据传递，必须使用Message封装数据； 而Messenger，Message都实现了Parceable接口，所以可以进程间传输. 
+Messenger, Message支持的跨进程传输数据类型相同； Message能封装的数据有`what`,`arg1`,`arg2`,`Bundle`,`replyTo`;
+object字段在同一进程可使用，非系统的Parcelable对象无法通过object字段传输.
+
+### 通信范例(服务端返回消息给客户端)
+* 服务端进程，基于上例修改
+
+```java
+//2.创建处理消息的handler
+        private static class MessengerHandler extends Handler {
+            @Override
+            public void handleMessage(Message msg) {
+            //处理消息
+                switch(msg.what) {
+                    case MSG_FROM_CLIENT:
+                       Log.e("tag","receive msg:"=msg.getData().getString("msg")); 
+                       //3.返回消息
+                       //3.1 获取客户端Messenger
+                       Messenger client = msg.replyTo;
+                       //3.2 创建Message
+                       Message replyMessage = Message.obtain(null, MSG_FROM_SERVICE);
+                       //3.3 创建消息
+                       Bundle bundle = new Bundle();
+                       bundle.putString("reply", "service receive msg and reply");
+                       //3.4 封装消息
+                       replyMessage.setData(bundle);
+                       
+                       try{
+                       //3.5 回复消息给客户端
+                            client.send(replyMessage);
+                       }catch(RemoteException e) {
+                            e.printStackTrace();
+                       }
+                    break;
+                    default:
+                    ...
+                    break;
+                }
+            }
+        }
+```
+
+* 客户端进程
+
+```java
+//2.创建Messenger，用于传递消息时，指定客户端对象
+private Messenger mGetReplyMessenger = new Messenger(new MessengerHandler());
+
+//1. 创建Handler
+private static class MessengerHandler extends Handler {
+            @Override
+            public void handleMessage(Message msg) {
+            //处理服务端返回的消息
+                switch(msg.what) {
+                    case MSG_FROM_SERVICE:
+                       Log.e("tag","reply msg:"=msg.getData().getString("reply")); 
+                    break;
+                    default:
+                    ...
+                    break;
+                }
+            }
+        }
+```
+**指定replyTo对象**
+```java
+            mService = new Messenger(service);
+            //3.创建通信消息
+            //3.1创建Message
+                Message msg = Message.obtain(null,  MSG_FROM_CLIENT);
+                //3.2.创建通信消息
+                Bundler data = new Bundler();
+                data.putString("msg", "hello, i'm client");
+                //3.3 使用Message封装数据
+                msg.setData(data);
+                //** 指定reply对象**
+                msg.replyTo = mGetReplyMessenger;
+                try{
+            //4.发送消息给service
+                    mService.send(msg);
+                }catch(RemoteException e){
+                    e.printStackTrace();
+                }
+```
+
+```mermaid
+graph LR
+    A[Client] --> B[/ Message /]
+    subgraph Binder
+    B --> C[Messenger ]
+    end
+    subgraph service
+    C --> D[Service]
+    D --> E(Handler)
+    end
+```
+```mermaid
+graph RL
+    A[Service] --> B[/Message/]
+    subgraph service
+    A --> F(Handler)
+    end
+    subgraph Binder
+    B --> C[replyTo Messenger  Binder]
+    end
+    C --> D[Client]
+    subgraph client
+    D --> E(Handler)
+    end
+```
+---
+## AIDL
+进程间通信中，如果服务端有大量并发请求，Messenger方式不适用。
+Messenger方式主要用于传递消息，如果想执行服务端方法，使用aidl.
+aidl支持的数据类型：
+* 基本数据类型
+* String, CharSequence
+* List:  只支持ArrayList，泛型类型必须被AIDL支持；
+* Map： 只支持HashMap, key，value必须被AIDL支持；
+* Parcelable: 实现了Parcelable接口的对象
+* AIDL: AIDL接口本身也可以在AIDL文件中使用.
+
+> 自定义的Parcelable对象,aidl文件必须显示**`import`**
+> > 自定义的Parcelable对象，必须新建一个和它同名的aidl文件，文件中声明Parcelable类型; 例如
+> > ```java
+> > package com.xxx;
+> > parcelable Book;
+> > ```
+
+AIDL中除了基本数据类型外，其他类型的参数必须标上方向:`in, out或 inout`; 
+
+`in` : 输入型参数，将`in`修饰的变量实参传递到服务端，服务端进程对`in`修饰的变量的修改，不会影响到客户端进程
+
+`out` ： 输出型参数; 实参不会传递到服务端进程，只传递了实参到初始值；但服务端对实参的修改，会返回给客户端进程
+
+`inout` ： 输入输出型参数；实参会传递给服务端，服务端对实参的修改，会返回给客户端；
+
+服务端service：
+```java
+package com.jerry.aidldemo;
+
+import android.app.Service;
+import android.content.Intent;
+import android.os.Binder;
+import android.os.IBinder;
+import android.os.RemoteException;
+
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+import androidx.annotation.Nullable;
+
+public class BookManagerService extends Service {
+    //CopyOnWriteArrayList: 支持并发读/写
+    private CopyOnWriteArrayList<Book> mBookList = new CopyOnWriteArrayList<>();
+
+    private Binder mBinder = new com.jerry.aidldemo.IBookManager.Stub() {
+        @Override
+        public void basicTypes(int anInt, long aLong, boolean aBoolean, float aFloat,
+                double aDouble, String aString) throws RemoteException {
+            //just test
+        }
+
+        @Override
+        public void addBook(Book book) throws RemoteException {
+            mBookList.add(book);
+        }
+
+        @Override
+        public List<Book> getBooks() throws RemoteException {
+            return mBookList;
+        }
+    };
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        mBookList.add(new Book("Android", 11));
+        mBookList.add(new Book("iOS", 12));
+    }
+
+    @Nullable
+    @Override
+    public IBinder onBind(Intent intent) {
+        return mBinder;
+    }
+}
+
+```
+客户端实现:
+```java
+package com.jerry.aidldemo;
+
+import androidx.appcompat.app.AppCompatActivity;
+
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.ServiceConnection;
+import android.os.Bundle;
+import android.os.IBinder;
+import android.os.RemoteException;
+
+import java.util.List;
+
+public class MainActivity extends AppCompatActivity {
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+        Intent intent= new Intent(this, BookManagerService.class);
+        bindService(intent, mConn, Context.BIND_AUTO_CREATE);
+    }
+
+    private ServiceConnection mConn = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName componentName, IBinder iBinder) {
+            //获取aidl的Binder对象
+            com.jerry.aidldemo.IBookManager bookManager= com.jerry.aidldemo.IBookManager.Stub.asInterface(iBinder);
+            try {
+                List<Book> books = bookManager.getBooks();
+
+            } catch (RemoteException e) {
+                e.printStackTrace();
+            }
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName componentName) {
+
+        }
+    };
+
+    @Override
+    protected void onDestroy() {
+        unbindService(mConn);
+        super.onDestroy();
+
+    }
+}
+
+```
+### AIDL服务端回调客户端
+`RemoteCallbackList`是系统提供用于删除跨进程listener的接口.
+```java
+public class RemoteCallbackList<E extends IIterface> {
+    ArrayMap<IBinder, Callback> mCallbacks = new ArrayMap<IBinder, Callback>();
+}
+```
+内部维护一个map，key是IBinder类型，value是Callback类型，Callback封装了远程listener
+#### 注册/解绑
+还有`register`,`unregister`方法，用于注册和解除注册
+RemoteCallbackList部分源码如下
+```java
+//常用此函数
+public boolean register(E callback){
+    register(callback, null);
+}
+public boolean register(E callback, Object cookie){
+    ...
+    IBinder binder = callback.asBinder();
+    Callback cb = new Callback(callback, cookie);
+    mCallbacks.put(binder, cb);
+    ...
+}
+```
+```java
+public boolean unregister(E callback) {
+    ...
+    Callback cb = mCallbacks.remove(callback.asBinder());
+    cb.mCallback.asBinder.unlinkToDeath(cb, 0);
+    ...
+}
+```
+服务端使用方式：
+```java
+public class BookManagerService extends Service {
+private RemoteCallbackList<com.jerry.aidldemo.IBookCallback> mListenerList =
+        new RemoteCallbackList<>();
+ private Binder mBinder = new com.jerry.aidldemo.IBookManager.Stub() {
+    @Override
+        public void registerCallback(com.jerry.aidldemo.IBookCallback callback) throws RemoteException {
+            mListenerList.register(callback);
+        }
+         @Override
+        public void unregisterCallback(com.jerry.aidldemo.IBookCallback callback) throws RemoteException {
+            mListenerList.unregister(callback);
+        }
+        ...    
+ }        
+}
+```
+#### 执行回调
+```java
+final int n = mListenerList.beginBroadcast();
+        for (int i=0; i< n; i++){
+            com.jerry.aidldemo.IBookCallback callback = mListenerList.getBroadcastItem(i);
+            if (callback != null){
+                try {
+                    callback.onNewBookArrived(book);
+                } catch (RemoteException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+        mListenerList.finishBroadcast();
+
+```
+> RemoteCallbackList的`beginBroadcast`和`finishBroadcast`是配对使用的
+
+aidl demo见[github](https://github.com/nightjerry/aidldemo.git)
