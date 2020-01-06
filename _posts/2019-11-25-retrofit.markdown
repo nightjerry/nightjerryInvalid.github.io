@@ -9,7 +9,7 @@ tags: java retrofit
 # retrofit 源码分析
 [TOC]
 
-![](../img/retrofit.png)
+![](/img/retrofit.png)
 
 ## 源码执行流程
 ### new Retrofit.Builder().baseUrl(xx).build()
