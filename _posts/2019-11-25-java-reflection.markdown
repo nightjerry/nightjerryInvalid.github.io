@@ -7,13 +7,13 @@ tags: java
 ---
 
 ## 反射Reflection
-[获取Class对象](#reflect_1)
-[创建实例](#reflect_2)
-[获取方法](#reflect_3)
-[获取类的成员变量](#reflect_4)
-[调用方法](#reflect_5)
-[访问私有方法](#reflect_6)
-[修改私有常量](#reflect_7)
+[获取Class对象](#reflect_1)  
+[创建实例](#reflect_2)  
+[获取方法](#reflect_3)  
+[获取类的成员变量](#reflect_4)   
+[调用方法](#reflect_5)  
+[访问私有方法](#reflect_6)  
+[修改私有常量](#reflect_7)  
 [进阶](#reflect_8)
 - [静态函数](#reflect_8_1)
 - [反射接口 —— 动态代理](#reflect_8_2)
